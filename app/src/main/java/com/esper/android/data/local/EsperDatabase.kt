@@ -6,13 +6,13 @@ import com.esper.android.data.model.*
 
 @Database(
     entities = [
+        WorkspaceEntity::class,
         NotebookEntity::class,
         PageEntity::class,
         CanvasEntity::class,
-        QuestionEntity::class,
-        ShelfEntity::class
+        QuestionEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class EsperDatabase : RoomDatabase() {

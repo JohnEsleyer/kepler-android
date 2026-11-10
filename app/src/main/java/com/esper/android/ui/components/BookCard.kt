@@ -32,8 +32,8 @@ fun BookCard(
     onClick: () -> Unit,
     onEdit: () -> Unit = {},
     onDelete: () -> Unit = {},
-    onSetShelf: () -> Unit = {},
-    onToggleBookmark: () -> Unit = {}
+    onToggleBookmark: () -> Unit = {},
+    isBookmarked: Boolean = false
 ) {
     val isReadOnly = LocalReadOnlyMode.current
     val theme = remember(notebook.coverPreset, notebook.coverImage) {
@@ -98,7 +98,7 @@ fun BookCard(
                     // Quick bookmark toggle button
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = if (notebook.isPinned) Color.Black.copy(alpha = 0.7f) else Color.Black.copy(alpha = 0.45f)
+                        color = if (isBookmarked) Color.Black.copy(alpha = 0.7f) else Color.Black.copy(alpha = 0.45f)
                     ) {
                         IconButton(
                             onClick = onToggleBookmark,
@@ -106,9 +106,9 @@ fun BookCard(
                             modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
-                                imageVector = if (notebook.isPinned) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
-                                contentDescription = if (notebook.isPinned) "Remove Bookmark" else "Bookmark",
-                                tint = if (notebook.isPinned) AmberGlow else Color.White.copy(alpha = 0.85f),
+                                imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                                contentDescription = if (isBookmarked) "Remove Bookmark" else "Bookmark",
+                                tint = if (isBookmarked) AmberGlow else Color.White.copy(alpha = 0.85f),
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -116,23 +116,6 @@ fun BookCard(
 
                     if (!isReadOnly) {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = Color.Black.copy(alpha = 0.5f)
-                            ) {
-                                IconButton(
-                                    onClick = onSetShelf,
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Folder,
-                                        contentDescription = "Set Bookshelf",
-                                        tint = Color.White.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                }
-                            }
-
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
                                 color = Color.Black.copy(alpha = 0.5f)

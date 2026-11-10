@@ -223,8 +223,6 @@ fun ComposeLexicalEditor(
     onHasUnsavedChangesChanged: ((Boolean) -> Unit)? = null,
     /** Explicit save handler. Returns true when the server confirmed the write. */
     onSave: (suspend (String) -> Boolean)? = null,
-    /** Explicit pull-to-refresh handler. */
-    onRefresh: (suspend () -> Unit)? = null,
     onTimestampClicked: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
     readOnly: Boolean = LocalReadOnlyMode.current,
@@ -236,19 +234,29 @@ fun ComposeLexicalEditor(
     val currentOnContentChanged by rememberUpdatedState(onContentChanged)
     val currentOnHasUnsavedChangesChanged by rememberUpdatedState(onHasUnsavedChangesChanged)
 
-    // A MutableState (not a captured local) so several edits in the same frame
-    // always build on the newest text instead of a stale snapshot.
     val textState = remember { mutableStateOf(initialMarkdown) }
     val rawText = textState.value
 
-    // Manual save state. Nothing is written to Room/server until the user taps
-    // Save (or presses Ctrl+S); this keeps background syncs from racing with
-    // in-flight typing.
     var lastSavedText by remember { mutableStateOf(initialMarkdown) }
     var isSaving by remember { mutableStateOf(false) }
     var saveStatusMessage by remember { mutableStateOf<String?>(null) }
-    var isRefreshing by remember { mutableStateOf(false) }
     val hasUnsavedChanges = rawText != lastSavedText
+
+    // Real-time debounce auto-save (400ms after user stops typing)
+    LaunchedEffect(rawText) {
+        if (!readOnly && onSave != null && rawText != lastSavedText) {
+            delay(400)
+            isSaving = true
+            try {
+                onSave(rawText)
+                lastSavedText = rawText
+                saveStatusMessage = "Saved"
+            } catch (_: Exception) {
+            } finally {
+                isSaving = false
+            }
+        }
+    }
 
     // Let the host screen know whenever the draft becomes dirty/clean. This is
     // the single source of truth used by the navigation guards.
@@ -358,27 +366,7 @@ fun ComposeLexicalEditor(
         }
     }
 
-    fun triggerRefresh() {
-        val refresh = onRefresh ?: return
-        if (isRefreshing) return
-        coroutineScope.launch {
-            isRefreshing = true
-            try {
-                refresh()
-            } catch (e: Exception) {
-                Toast.makeText(
-                    context,
-                    "Refresh failed: ${e.localizedMessage ?: "Unknown error"}",
-                    Toast.LENGTH_LONG
-                ).show()
-            } finally {
-                // Let Room's re-emission land while isRefreshing is still true,
-                // then clear the indicator.
-                delay(350)
-                isRefreshing = false
-            }
-        }
-    }
+    
 
     /** Writes the edited text of one block back into the document. */
     fun commitBlockText(block: LexicalBlockNode, text: String) {
@@ -504,13 +492,10 @@ fun ComposeLexicalEditor(
     // pulls to refresh; background Room syncs can no longer clobber a draft.
     LaunchedEffect(initialMarkdown) {
         if (textState.value == initialMarkdown) {
-            // The persisted copy caught up with what is on screen (for example
-            // after a Save). Treat it as the new saved baseline so the editor
-            // stops reporting a dirty draft.
             if (lastSavedText != initialMarkdown) lastSavedText = initialMarkdown
             return@LaunchedEffect
         }
-        if (!hasUnsavedChanges || isRefreshing) {
+        if (!hasUnsavedChanges) {
             renderExternal(initialMarkdown)
             lastSavedText = initialMarkdown
         }
@@ -722,18 +707,7 @@ fun ComposeLexicalEditor(
                 }
             }
 
-            if (onRefresh != null) {
-                PullToRefreshLayout(
-                    isRefreshing = isRefreshing,
-                    onRefresh = { triggerRefresh() },
-                    refreshingText = "Refreshing notes...",
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    editorContent()
-                }
-            } else {
-                editorContent()
-            }
+            editorContent()
 
             // Jump to the end of a long note. It floats above the IME and
             // disappears once the user is already at the bottom.

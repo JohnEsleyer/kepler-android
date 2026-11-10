@@ -5,61 +5,78 @@
 #
 # Rule Options:
 #   enabled:            (bool)   If false, this directory and its children are skipped.
+#   compact:            (bool)   If true, strips extra whitespace and condenses formatting to save LLM tokens.
+#   group:              (string) Optional group name to categorize this directory.
 #   include:            ([list]) Specific files/globs to Force Include (overrides gitignore & extensions).
 #   exclude:            ([list]) Specific files/globs to Force Exclude (highest priority).
 #   extensions:         ([list]) Allow-list of extensions (e.g., [go, js]). If empty, all text files are allowed.
 #   exclude_extensions: ([list]) Block-list of extensions (e.g., [log, tmp]).
 #
+# Group Options:
+#   signatures_groups:  ([list]) Groups that should be extracted as signatures only.
+#   full_code_groups:   ([list]) Groups that should be extracted as full code.
+#   groups:             (map)    Map of group name to mode ("signatures" or "full").
+#
 # Usage:
 #   - Run 'textify scan' to detect new folders and update this file.
 #   - Run 'textify start' to generate the output file.
 
+
+groups:
+    app: full
+
+
 output_file: codebase.txt
+format: raw
+tree: true
+max_file_size: 512000
 dirs:
     .:
         enabled: true
         extensions:
-            - gitignore
-            - pro
-            - xml
-            - html
             - kt
-            - jar
-            - bat
-            - md
             - kts
-            - toml
-            - properties
-            - js
+            - md
+            - json
+            - xml
+
     .gradle:
         enabled: false
     .kotlin:
+        enabled: false
+    .wrangler:
+        enabled: true
+    app:
+        enabled: true
+        group: app
+        extensions:
+            - kts
+            - json
+            - xml
+            - kt
+            - html
+            - md
+    app/build:
         enabled: false
     docs:
         enabled: true
         extensions:
             - md
-    docs/esper-main:
-        enabled: true
-        extensions:
-            - md
-    app:
-        enabled: true
-        extensions:
-            - kts
-            - pro
-            - xml
-            - html
-            - kt
-    app/build:
-        enabled: false
     gradle:
         enabled: true
         extensions:
             - toml
-            - jar
             - properties
     scripts:
         enabled: true
         extensions:
             - js
+    _dev:
+        enabled: true
+        include:
+            - "docs"
+        exclude: 
+            - "scripts"
+        extensions:
+            - md
+            - xml

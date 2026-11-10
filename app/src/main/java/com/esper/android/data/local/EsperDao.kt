@@ -16,12 +16,24 @@ data class NotebookWithDetails(
 
 @Dao
 interface EsperDao {
-    @Query("SELECT * FROM notebooks ORDER BY createdAt DESC")
-    fun observeAllNotebooks(): Flow<List<NotebookEntity>>
+    @Query("SELECT * FROM workspaces ORDER BY lastAccessedAt DESC")
+    fun observeAllWorkspaces(): Flow<List<WorkspaceEntity>>
+
+    @Query("SELECT * FROM workspaces WHERE id = :workspaceId")
+    suspend fun getWorkspaceById(workspaceId: String): WorkspaceEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertWorkspace(workspace: WorkspaceEntity)
+
+    @Query("DELETE FROM workspaces WHERE id = :workspaceId")
+    suspend fun deleteWorkspace(workspaceId: String)
+
+    @Query("SELECT * FROM notebooks WHERE workspaceId = :workspaceId ORDER BY createdAt DESC")
+    fun observeNotebooksForWorkspace(workspaceId: String): Flow<List<NotebookEntity>>
 
     @Transaction
-    @Query("SELECT * FROM notebooks ORDER BY createdAt DESC")
-    fun observeAllNotebooksWithDetails(): Flow<List<NotebookWithDetails>>
+    @Query("SELECT * FROM notebooks WHERE workspaceId = :workspaceId ORDER BY createdAt DESC")
+    fun observeNotebooksWithDetailsForWorkspace(workspaceId: String): Flow<List<NotebookWithDetails>>
 
     @Transaction
     @Query("SELECT * FROM notebooks WHERE id = :notebookId")
@@ -37,8 +49,8 @@ interface EsperDao {
     @Query("SELECT * FROM pages WHERE notebookId = :notebookId AND id = :pageId")
     suspend fun getPageById(notebookId: String, pageId: String): PageEntity?
 
-    @Query("SELECT * FROM notebooks")
-    suspend fun getAllNotebooksList(): List<NotebookEntity>
+    @Query("SELECT * FROM notebooks WHERE workspaceId = :workspaceId")
+    suspend fun getNotebooksByWorkspace(workspaceId: String): List<NotebookEntity>
 
     @Query("SELECT * FROM pages WHERE notebookId = :notebookId ORDER BY position ASC")
     suspend fun getPagesForNotebook(notebookId: String): List<PageEntity>
@@ -88,9 +100,6 @@ interface EsperDao {
     @Query("UPDATE notebooks SET notesUpdatedAt = :notesUpdatedAt, updatedAt = :updatedAt WHERE id = :notebookId")
     suspend fun updateNotebookNotesUpdatedAt(notebookId: String, notesUpdatedAt: Long, updatedAt: Long = notesUpdatedAt)
 
-    @Query("UPDATE notebooks SET isPinned = :isPinned WHERE id = :notebookId")
-    suspend fun updateNotebookPinned(notebookId: String, isPinned: Boolean)
-
     @Query("UPDATE pages SET title = :title WHERE notebookId = :notebookId AND id = :pageId")
     suspend fun updatePageTitle(notebookId: String, pageId: String, title: String)
 
@@ -116,17 +125,4 @@ interface EsperDao {
         deleteQuestionsForNotebook(notebookId)
         deleteNotebook(notebookId)
     }
-
-    // Shelf CRUD
-    @Query("SELECT * FROM shelves ORDER BY position ASC, updatedAt DESC")
-    fun observeAllShelves(): Flow<List<ShelfEntity>>
-
-    @Query("SELECT * FROM shelves")
-    suspend fun getAllShelvesList(): List<ShelfEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertShelf(shelf: ShelfEntity)
-
-    @Query("DELETE FROM shelves WHERE id = :shelfId")
-    suspend fun deleteShelf(shelfId: String)
 }

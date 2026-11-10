@@ -2,23 +2,29 @@ package com.esper.android.data.model
 
 import androidx.room.*
 
+@Entity(tableName = "workspaces")
+data class WorkspaceEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val treeUriString: String?,
+    val isDefault: Boolean = false,
+    val lastAccessedAt: Long = System.currentTimeMillis()
+)
+
 @Entity(tableName = "notebooks")
 data class NotebookEntity(
     @PrimaryKey val id: String,
+    val workspaceId: String = "default",
     val title: String,
     val description: String,
-    val ownerSub: String,
-    val visibility: String = "public", // "public", "protected", "restricted"
+    val ownerSub: String = "local",
+    val visibility: String = "public",
     val coverPreset: String = "celestial",
     val coverImage: String? = null,
-    val isPinned: Boolean = false,
+    val showTitleOnCover: Boolean = true,
     val tagsCsv: String = "",
-    // Creation timestamp (epoch millis) used by the "Recently Created" sort.
     @ColumnInfo(defaultValue = "0") val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    // Timestamp (epoch millis) of the most recent update to notes content.
-    // Kept separate from updatedAt so configuring metadata (title, cover, etc.)
-    // does not alter the "Recently Updated" notes sort order.
     @ColumnInfo(defaultValue = "0") val notesUpdatedAt: Long = 0L
 )
 
@@ -59,10 +65,10 @@ data class PageEntity(
 data class CanvasEntity(
     @PrimaryKey val id: String,
     val notebookId: String,
-    val kind: String, // "html", "youtube", "excalidraw"
+    val kind: String, // "html" or "json"
     val title: String,
     val payloadJson: String,
-    val assignedPagesCsv: String = ""
+    val assignedChapter: Int = 1 // 1-based index matching chapter
 )
 
 @Entity(
@@ -83,16 +89,4 @@ data class QuestionEntity(
     val title: String,
     val answer: String,
     val position: Int = 0
-)
-
-@Entity(tableName = "shelves")
-data class ShelfEntity(
-    @PrimaryKey val id: String,
-    val title: String,
-    val description: String = "",
-    val color: String = "#6366F1",
-    val coverPreset: String = "midnight",
-    val position: Int = 0,
-    val notebookIdsCsv: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
 )

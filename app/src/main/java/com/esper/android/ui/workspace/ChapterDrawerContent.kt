@@ -91,9 +91,7 @@ fun ChapterDrawerContent(
                 itemsIndexed(pages, key = { _, p -> p.id }) { index, page ->
                     val isSelected = index == activePageIndex
                     val isSubpage = page.parentId != null
-                    val hasAttachment = canvases.any { c ->
-                        c.assignedPagesCsv.split(",").map { it.trim() }.contains(page.id)
-                    }
+                    val hasAttachment = canvases.any { it.assignedChapter == index + 1 }
 
                     Surface(
                         shape = RoundedCornerShape(10.dp),

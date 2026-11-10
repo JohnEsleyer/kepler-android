@@ -12,15 +12,6 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.zip.ZipInputStream
 
-/**
- * Client-side book package importer for AI-agent generated bundles.
- * Mirrors web bookImporter.js: `.zip` archives (book.json plus chapter
- * markdown files plus visual HTML files) and single-file `.esper` and
- * `.json` books.
- *
- * Everything runs on-device: the VPS only receives the standard JSON
- * records when MainActivity pushes the imported book after this returns.
- */
 data class ImportedBook(
     val id: String,
     val title: String,
@@ -40,18 +31,18 @@ object ZipImporter {
         context: Context,
         uri: Uri,
         db: EsperDatabase,
-        userId: String?
+        workspaceId: String = "default"
     ): ImportedBook = withContext(Dispatchers.IO) {
         val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalArgumentException("Cannot open selected file")
         if (raw.size >= 2 && raw[0] == 0x50.toByte() && raw[1] == 0x4B.toByte()) {
-            importZip(raw, db, userId)
+            importZip(raw, db, workspaceId)
         } else {
-            importSingleJson(String(raw, Charsets.UTF_8), db, userId)
+            importSingleJson(String(raw, Charsets.UTF_8), db, workspaceId)
         }
     }
 
-    private suspend fun importZip(raw: ByteArray, db: EsperDatabase, userId: String?): ImportedBook {
+    private suspend fun importZip(raw: ByteArray, db: EsperDatabase, workspaceId: String): ImportedBook {
         val files = mutableMapOf<String, String>()
         ZipInputStream(raw.inputStream()).use { zip ->
             var entry = zip.nextEntry
@@ -86,12 +77,12 @@ object ZipImporter {
         val mdFiles = files
             .filter { it.key.lowercase().endsWith(".md") && !it.key.contains("readme", ignoreCase = true) }
             .toList()
-            .sortedWith(Comparator { a, b -> naturalCompare(a.first, b.first) })
+            .sortedWith { a, b -> naturalCompare(a.first, b.first) }
         if (mdFiles.isEmpty()) throw IllegalArgumentException("Archive contains no chapter markdown files (.md)")
 
-        val newBookId = "doc-${UUID.randomUUID().toString().take(8)}"
+        val newBookId = "book-${UUID.randomUUID().toString().take(8)}"
         val title = meta.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Imported Book"
-        val desc = meta.get("description")?.takeIf { it.isJsonPrimitive }?.asString ?: "Imported from agent package"
+        val desc = meta.get("description")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
         val visibility = meta.get("visibility")?.takeIf { it.isJsonPrimitive }?.asString ?: "public"
         val preset = meta.get("coverPreset")?.takeIf { it.isJsonPrimitive }?.asString ?: "celestial"
         val coverImage = meta.get("coverImage")?.takeIf { it.isJsonPrimitive }?.asString
@@ -99,57 +90,34 @@ object ZipImporter {
             ?.asJsonArray?.mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString }
             ?.filter { it.isNotBlank() }?.joinToString(",")?.ifEmpty { null } ?: "Imported"
 
-        // Chapters with `NN.M_*.md` subchapter nesting (mirrors web importer).
-        val pageIdByNumber = mutableMapOf<Int, String>()
         val pageEntities = mdFiles.mapIndexed { idx, (path, content) ->
             val baseName = path.substringAfterLast("/").removeSuffix(".md").removeSuffix(".MD")
             val cleanTitle = content.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
                 ?.replace(Regex("^[#\\s*_\\->`]+"), "")?.replace(Regex("[#\\s*_\\->`]+$"), "")?.trim()?.take(100)
                 ?.ifEmpty { null }
                 ?: stripNumericPrefix(baseName).ifEmpty { "Chapter ${idx + 1}" }
-            val pageId = "p-${UUID.randomUUID().toString().take(8)}"
-            pageIdByNumber[idx + 1] = pageId
-            var parentId: String? = null
-            Regex("^0*(\\d+)\\.(\\d+)").find(baseName)?.let { m ->
-                parentId = pageIdByNumber[m.groupValues[1].toIntOrNull() ?: -1]
-            }
             PageEntity(
-                id = pageId,
+                id = "p-$newBookId-${path.substringAfterLast('/')}",
                 notebookId = newBookId,
-                parentId = parentId,
+                parentId = null,
                 title = cleanTitle,
                 notes = content,
                 position = idx
             )
         }
 
-        // Visuals: every HTML file, optionally scoped via book.json visuals[].
-        val visualsMeta = meta.get("visuals")?.takeIf { it.isJsonArray }?.asJsonArray
         val htmlFiles = files.filter { it.key.lowercase().endsWith(".html") && !it.key.lowercase().endsWith("index.html") }
-        val canvasEntities = htmlFiles.entries.map { (path, code) ->
+        val canvasEntities = htmlFiles.entries.mapIndexed { idx, (path, code) ->
             val baseName = path.substringAfterLast("/").removeSuffix(".html").removeSuffix(".HTML")
-            var matchedTitle: String? = null
-            var assigned: List<String>? = null
-            visualsMeta?.forEach { v ->
-                val obj = v.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
-                val fileRef = obj.get("file")?.takeIf { it.isJsonPrimitive }?.asString
-                if (fileRef != null && path.endsWith(fileRef)) {
-                    matchedTitle = obj.get("title")?.takeIf { it.isJsonPrimitive }?.asString
-                    obj.get("assignedChapters")?.takeIf { it.isJsonArray }?.asJsonArray?.let { arr ->
-                        val resolved = arr.mapNotNull { n ->
-                            n.takeIf { it.isJsonPrimitive }?.asInt?.let { pageIdByNumber[it] }
-                        }
-                        if (resolved.isNotEmpty()) assigned = resolved
-                    }
-                }
-            }
+            val regex = Regex("^0*(\\d+)")
+            val assignedCh = regex.find(baseName)?.groupValues?.get(1)?.toIntOrNull() ?: (idx + 1)
             CanvasEntity(
-                id = "c-${UUID.randomUUID().toString().take(8)}",
+                id = "c-$newBookId-${path.substringAfterLast('/')}",
                 notebookId = newBookId,
                 kind = "html",
-                title = matchedTitle ?: stripNumericPrefix(baseName).ifEmpty { "Simulation" },
+                title = stripNumericPrefix(baseName).ifEmpty { "Simulation" },
                 payloadJson = code,
-                assignedPagesCsv = (assigned ?: pageEntities.map { it.id }).joinToString(",")
+                assignedChapter = assignedCh
             )
         }
 
@@ -157,7 +125,7 @@ object ZipImporter {
         val questionEntities = (questionsMeta?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject } ?: emptyList())
             .mapIndexed { idx, q ->
                 QuestionEntity(
-                    id = "q-${UUID.randomUUID().toString().take(8)}",
+                    id = "q-${System.currentTimeMillis() + idx}",
                     notebookId = newBookId,
                     title = q.get("title")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
                         ?: "Review Question ${idx + 1}",
@@ -165,23 +133,6 @@ object ZipImporter {
                     position = idx
                 )
             }
-
-        db.dao().upsertNotebook(
-            NotebookEntity(
-                id = newBookId,
-                title = title,
-                description = desc,
-                ownerSub = userId ?: "*",
-                visibility = visibility,
-                coverPreset = preset,
-                coverImage = coverImage,
-                tagsCsv = tagsCsv,
-                updatedAt = System.currentTimeMillis()
-            )
-        )
-        db.dao().upsertPages(pageEntities)
-        if (canvasEntities.isNotEmpty()) db.dao().upsertCanvases(canvasEntities)
-        if (questionEntities.isNotEmpty()) db.dao().upsertQuestions(questionEntities)
 
         return ImportedBook(
             id = newBookId,
@@ -197,7 +148,7 @@ object ZipImporter {
         )
     }
 
-    private suspend fun importSingleJson(text: String, db: EsperDatabase, userId: String?): ImportedBook {
+    private fun importSingleJson(text: String, db: EsperDatabase, workspaceId: String): ImportedBook {
         val root = try {
             Gson().fromJson(text, JsonObject::class.java)
         } catch (_: Exception) {
@@ -206,9 +157,9 @@ object ZipImporter {
         val pagesArr = root.get("pages")?.takeIf { it.isJsonArray }?.asJsonArray
             ?: throw IllegalArgumentException("Book file contains no pages")
 
-        val newBookId = "doc-${UUID.randomUUID().toString().take(8)}"
+        val newBookId = "book-${UUID.randomUUID().toString().take(8)}"
         val title = root.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Imported Book"
-        val desc = root.get("description")?.takeIf { it.isJsonPrimitive }?.asString ?: "Imported from file"
+        val desc = root.get("description")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
         val visibility = root.get("visibility")?.takeIf { it.isJsonPrimitive }?.asString ?: "public"
         val preset = root.get("coverPreset")?.takeIf { it.isJsonPrimitive }?.asString ?: "celestial"
         val coverImage = root.get("coverImage")?.takeIf { it.isJsonPrimitive }?.asString
@@ -220,68 +171,42 @@ object ZipImporter {
             .mapIndexed { idx, p ->
                 PageEntity(
                     id = p.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
-                        ?: "p-${UUID.randomUUID().toString().take(8)}",
+                        ?: "p-$newBookId-$idx",
                     notebookId = newBookId,
-                    parentId = p.get("parentId")?.takeIf { it.isJsonPrimitive }?.asString,
+                    parentId = null,
                     title = p.get("title")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
                         ?: "Chapter ${idx + 1}",
                     notes = p.get("notes")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
                     position = idx
                 )
             }
-        if (pageEntities.isEmpty()) throw IllegalArgumentException("Book file contains no pages")
 
-        val canvasEntities = (root.get("canvases")?.takeIf { it.isJsonArray }?.asJsonArray
-            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject } ?: emptyList())
-            .map { c ->
-                val dataEl = c.get("data")
+        val canvasEntities = (root.get("visuals")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?: root.get("canvases")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?: emptyList())
+            .mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            .mapIndexed { idx, c ->
                 CanvasEntity(
-                    id = c.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
-                        ?: "c-${UUID.randomUUID().toString().take(8)}",
+                    id = "c-$newBookId-$idx",
                     notebookId = newBookId,
-                    kind = c.get("type")?.takeIf { it.isJsonPrimitive }?.asString ?: "html",
-                    title = c.get("title")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
-                        ?: "Companion Visual",
-                    payloadJson = if (dataEl != null && dataEl.isJsonObject) {
-                        val code = dataEl.asJsonObject.get("code")?.takeIf { it.isJsonPrimitive }?.asString
-                        code ?: Gson().toJson(dataEl)
-                    } else dataEl?.takeIf { it.isJsonPrimitive }?.asString ?: "{}",
-                    assignedPagesCsv = c.get("assignedPages")?.takeIf { it.isJsonArray }?.asJsonArray
-                        ?.mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString }
-                        ?.joinToString(",") ?: ""
+                    kind = "html",
+                    title = c.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Simulation",
+                    payloadJson = c.get("content")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
+                    assignedChapter = c.get("assignedChapter")?.takeIf { it.isJsonPrimitive }?.asInt ?: (idx + 1)
                 )
             }
 
-        val questionEntities = (root.get("questions")?.takeIf { it.isJsonArray }?.asJsonArray
-            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject } ?: emptyList())
+        val questionEntities = (root.get("questions")?.takeIf { it.isJsonArray }?.asJsonArray ?: emptyList())
+            .mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
             .mapIndexed { idx, q ->
                 QuestionEntity(
-                    id = q.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
-                        ?: "q-${UUID.randomUUID().toString().take(8)}",
+                    id = "q-${System.currentTimeMillis() + idx}",
                     notebookId = newBookId,
-                    title = q.get("title")?.takeIf { it.isJsonPrimitive }?.asString?.ifEmpty { null }
-                        ?: "Question ${idx + 1}",
+                    title = q.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Question ${idx + 1}",
                     answer = q.get("answer")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
                     position = idx
                 )
             }
-
-        db.dao().upsertNotebook(
-            NotebookEntity(
-                id = newBookId,
-                title = title,
-                description = desc,
-                ownerSub = userId ?: "*",
-                visibility = visibility,
-                coverPreset = preset,
-                coverImage = coverImage,
-                tagsCsv = tagsCsv,
-                updatedAt = System.currentTimeMillis()
-            )
-        )
-        db.dao().upsertPages(pageEntities)
-        if (canvasEntities.isNotEmpty()) db.dao().upsertCanvases(canvasEntities)
-        if (questionEntities.isNotEmpty()) db.dao().upsertQuestions(questionEntities)
 
         return ImportedBook(
             id = newBookId,

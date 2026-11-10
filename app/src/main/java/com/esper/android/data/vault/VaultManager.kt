@@ -13,6 +13,7 @@ import com.esper.android.data.model.CanvasEntity
 import com.esper.android.data.model.NotebookEntity
 import com.esper.android.data.model.PageEntity
 import com.esper.android.data.model.QuestionEntity
+import com.esper.android.data.model.WorkspaceEntity
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
@@ -22,42 +23,29 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * VaultManager owns the filesystem contract for Esper.
- *
- * A vault is an ordinary folder. Every direct child directory is a book,
- * every `*.md` file inside it is a chapter, `visuals/` holds companion
- * HTML/JSON files, and metadata/questions are plain JSON. Room is only an
- * index/cache; the folder is always the source of truth.
- *
- * The manager works against either an app-managed folder or an external
- * folder selected through the Android Storage Access Framework.
+ * VaultManager owns Kepler workspace filesystem operations conforming to Kepler Data & Storage Spec.
  */
 class VaultManager(
     private val context: Context,
     private val db: EsperDatabase,
     private val gson: Gson = Gson()
 ) {
-    private val prefs = context.getSharedPreferences("esper_vault_prefs", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("kepler_workspace_prefs", Context.MODE_PRIVATE)
     private val mutex = Mutex()
 
     companion object {
-        const val KEY_CUSTOM_VAULT_URI = "custom_vault_tree_uri"
-        const val KEY_ACTIVE_VAULT_NAME = "active_vault_name"
-        const val ESPER_DIR = ".esper"
-        const val CONFIG_FILE = "config.json"
-        const val SHELVES_FILE = "shelves.json"
+        const val KEY_ACTIVE_WORKSPACE_ID = "active_workspace_id"
         const val BOOK_META_FILE = "book.json"
         const val QUESTIONS_FILE = "questions.json"
         const val VISUALS_DIR = "visuals"
-        const val DEFAULT_VAULT_NAME = "Default Vault"
+        const val DEFAULT_WORKSPACE_NAME = "Primary Workspace"
+        const val DEFAULT_WORKSPACE_ID = "default_local_workspace"
     }
 
     private data class Node(
@@ -67,53 +55,71 @@ class VaultManager(
         val isDirectory: Boolean = false
     )
 
-    // ---------------------------------------------------------------- root
-
-    fun getDefaultVaultDir(): File {
+    fun getDefaultWorkspaceDir(): File {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
-        val vaultDir = File(base, "EsperVault")
-        if (!vaultDir.exists()) vaultDir.mkdirs()
-        return vaultDir
+        val workspaceDir = File(base, "KeplerWorkspace")
+        if (!workspaceDir.exists()) workspaceDir.mkdirs()
+        return workspaceDir
     }
 
-    fun getCustomVaultUri(): Uri? =
-        prefs.getString(KEY_CUSTOM_VAULT_URI, null)?.let(Uri::parse)
-
-    fun getActiveVaultName(): String =
-        prefs.getString(KEY_ACTIVE_VAULT_NAME, DEFAULT_VAULT_NAME) ?: DEFAULT_VAULT_NAME
-
-    fun getActiveVaultLocation(): String {
-        val uri = getCustomVaultUri()
-        return uri?.toString() ?: getDefaultVaultDir().absolutePath
-    }
-
-    fun setCustomVaultUri(uri: Uri?, name: String = "External Folder") {
-        prefs.edit().apply {
-            if (uri != null) {
-                putString(KEY_CUSTOM_VAULT_URI, uri.toString())
-                putString(KEY_ACTIVE_VAULT_NAME, name.ifBlank { "External Vault" })
-            } else {
-                remove(KEY_CUSTOM_VAULT_URI)
-                putString(KEY_ACTIVE_VAULT_NAME, DEFAULT_VAULT_NAME)
-            }
-        }.apply()
-    }
-
-    /** Null when a saved external tree is no longer reachable. */
-    private fun activeRoot(): Node? {
-        val uri = getCustomVaultUri()
-        if (uri != null) {
-            return try {
-                val doc = DocumentFile.fromTreeUri(context, uri)
-                if (doc != null && doc.exists() && doc.isDirectory) {
-                    Node(doc.name ?: "External Vault", doc = doc, isDirectory = true)
-                } else null
-            } catch (_: Exception) {
-                null
-            }
+    suspend fun getActiveWorkspace(): WorkspaceEntity = withContext(Dispatchers.IO) {
+        val id = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, DEFAULT_WORKSPACE_ID) ?: DEFAULT_WORKSPACE_ID
+        var ws = db.dao().getWorkspaceById(id)
+        if (ws == null) {
+            ws = WorkspaceEntity(
+                id = DEFAULT_WORKSPACE_ID,
+                name = DEFAULT_WORKSPACE_NAME,
+                treeUriString = null,
+                isDefault = true,
+                lastAccessedAt = System.currentTimeMillis()
+            )
+            db.dao().upsertWorkspace(ws)
         }
-        val dir = getDefaultVaultDir()
-        return Node(dir.name, file = dir, isDirectory = true)
+        ws
+    }
+
+    suspend fun setActiveWorkspace(workspaceId: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_ACTIVE_WORKSPACE_ID, workspaceId).apply()
+        db.dao().getWorkspaceById(workspaceId)?.let {
+            db.dao().upsertWorkspace(it.copy(lastAccessedAt = System.currentTimeMillis()))
+        }
+    }
+
+    suspend fun addWorkspace(name: String, treeUri: Uri?): WorkspaceEntity = withContext(Dispatchers.IO) {
+        val newId = "ws-" + UUID.randomUUID().toString().take(8)
+        val entity = WorkspaceEntity(
+            id = newId,
+            name = name.ifBlank { "Workspace" },
+            treeUriString = treeUri?.toString(),
+            isDefault = false,
+            lastAccessedAt = System.currentTimeMillis()
+        )
+        db.dao().upsertWorkspace(entity)
+        setActiveWorkspace(newId)
+        entity
+    }
+
+    suspend fun removeWorkspace(workspaceId: String) = withContext(Dispatchers.IO) {
+        if (workspaceId == DEFAULT_WORKSPACE_ID) return@withContext
+        db.dao().deleteWorkspace(workspaceId)
+        val active = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, DEFAULT_WORKSPACE_ID)
+        if (active == workspaceId) {
+            setActiveWorkspace(DEFAULT_WORKSPACE_ID)
+        }
+    }
+
+    private suspend fun activeRoot(): Node? = withContext(Dispatchers.IO) {
+        val ws = getActiveWorkspace()
+        if (ws.treeUriString != null) {
+            try {
+                val doc = DocumentFile.fromTreeUri(context, Uri.parse(ws.treeUriString))
+                if (doc != null && doc.exists() && doc.isDirectory) {
+                    return@withContext Node(doc.name ?: ws.name, doc = doc, isDirectory = true)
+                }
+            } catch (_: Exception) {}
+        }
+        val dir = getDefaultWorkspaceDir()
+        Node(dir.name, file = dir, isDirectory = true)
     }
 
     // ---------------------------------------------------------- node helpers
@@ -135,7 +141,7 @@ class VaultManager(
     }
 
     private fun findChild(parent: Node, name: String): Node? =
-        listChildren(parent).firstOrNull { it.name == name }
+        listChildren(parent).firstOrNull { it.name.equals(name, ignoreCase = true) }
 
     private fun createDirectory(parent: Node, name: String): Node? {
         return try {
@@ -193,18 +199,11 @@ class VaultManager(
         false
     }
 
-    private fun mimeFor(name: String): String = when {
-        name.endsWith(".md", true) -> "text/markdown"
-        name.endsWith(".html", true) || name.endsWith(".htm", true) -> "text/html"
-        name.endsWith(".json", true) -> "application/json"
-        name.endsWith(".svg", true) -> "image/svg+xml"
-        else -> "application/octet-stream"
-    }
-
     // --------------------------------------------------------------- scanning
 
-    suspend fun seedDefaultVaultIfEmpty() = withContext(Dispatchers.IO) {
-        if (getCustomVaultUri() != null) return@withContext
+    suspend fun seedDefaultWorkspaceIfEmpty() = withContext(Dispatchers.IO) {
+        val ws = getActiveWorkspace()
+        if (ws.treeUriString != null) return@withContext
         mutex.withLock {
             val root = activeRoot() ?: return@withLock
             val existingBooks = listChildren(root).filter { it.isDirectory && !it.name.startsWith(".") }
@@ -218,10 +217,10 @@ class VaultManager(
                     tags = "Physics,Astrodynamics,Space",
                     chapters = listOf(
                         "Keplerian Motion" to "# Keplerian Motion\n\nPlanetary motion obeys Kepler's three laws:\n\n1. The orbit of a planet is an ellipse with the Sun at one of the two foci.\n2. A line segment joining a planet and the Sun sweeps out equal areas during equal intervals of time.\n3. The square of the orbital period is proportional to the cube of the semi-major axis.\n\n${'$'}${'$'}\\frac{T^2}{a^3} = \\frac{4\\pi^2}{G(M + m)}${'$'}${'$'}\n\nNotice how the areal velocity remains constant: ${'$'}${'$'}\\frac{dA}{dt} = \\frac{1}{2} r^2 \\dot{\\theta} = \\text{const}${'$'}${'$'}.\n",
-                        "Vis-Viva Energy" to "# The Vis-Viva Equation\n\nFor any Keplerian orbit, the velocity at distance ${'$'}r${'$'} from the central body is determined by the Vis-Viva relation:\n\n${'$'}${'$'}v^2 = \\mu \\left( \\frac{2}{r} - \\frac{1}{a} \\right)${'$'}${'$'}\n\nWhere:\n- ${'$'}v${'$'} is the orbital speed of the body\n- ${'$'}\\mu = GM${'$'} is the standard gravitational parameter\n- ${'$'}r${'$'} is the orbital radius from the primary focus\n- ${'$'}a${'$'} is the semi-major axis (${'$'}a > 0${'$'} for ellipses, ${'$'}a = \\infty${'$'} for parabolas, ${'$'}a < 0${'$'} for hyperbolas)\n\n```python\nimport math\ndef orbital_velocity(r, a, mu=3.986004418e14):\n    return math.sqrt(mu * (2.0 / r - 1.0 / a))\n```\n"
+                        "Vis-Viva Energy" to "# The Vis-Viva Equation\n\nFor any Keplerian orbit, the velocity at distance ${'$'}r${'$'} from the central body is determined by the Vis-Viva relation:\n\n${'$'}${'$'}v^2 = \\mu \\left( \\frac{2}{r} - \\frac{1}{a} \\right)${'$'}${'$'}\n\nWhere:\n- ${'$'}v${'$'} is orbital speed\n- ${'$'}\\mu = GM${'$'} is gravitational parameter\n- ${'$'}r${'$'} is orbital radius\n- ${'$'}a${'$'} is semi-major axis\n"
                     ),
                     questions = listOf(
-                        "What happens to velocity at periapsis?" to "Velocity reaches its maximum at periapsis (${'$'}r = r_{min}${'$'}), as demonstrated by the Vis-Viva equation."
+                        "What is Kepler's First Law?" to "The orbit of a planet is an ellipse with the Sun at one of the two foci."
                     )
                 )
 
@@ -233,30 +232,15 @@ class VaultManager(
                     preset = "quantum",
                     tags = "Quantum,Computing,Physics",
                     chapters = listOf(
-                        "Qubit Representation" to "# The Quantum Bit (Qubit)\n\nUnlike a classical bit which is either ${'$'}0${'$'} or ${'$'}1${'$'}, a qubit exists in a linear superposition state:\n\n${'$'}${'$'}|\\psi\\rangle = \\alpha |0\\rangle + \\beta |1\\rangle${'$'}${'$'}\n\nWhere ${'$'}\\alpha, \\beta \\in \\mathbb{C}${'$'} such that ${'$'}|\\alpha|^2 + |\\beta|^2 = 1${'$'}.\n\nOn the Bloch sphere representation:\n${'$'}${'$'}|\\psi\\rangle = \\cos\\left(\\frac{\\theta}{2}\\right)|0\\rangle + e^{i\\phi}\\sin\\left(\\frac{\\theta}{2}\\right)|1\\rangle${'$'}${'$'}\n"
+                        "Qubit Representation" to "# The Quantum Bit (Qubit)\n\nUnlike a classical bit which is either ${'$'}0${'$'} or ${'$'}1${'$'}, a qubit exists in a linear superposition state:\n\n${'$'}${'$'}|\\psi\\rangle = \\alpha |0\\rangle + \\beta |1\\rangle${'$'}${'$'}\n\nWhere ${'$'}|\\alpha|^2 + |\\beta|^2 = 1${'$'}.\n"
                     ),
                     questions = listOf(
                         "What is the normalization condition?" to "${'$'}${'$'}|\\alpha|^2 + |\\beta|^2 = 1${'$'}${'$'} ensures total probability equals 1."
                     )
                 )
-
-                val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                seedBook(
-                    root = root,
-                    folderName = "Personal Journal",
-                    title = "Personal Journal",
-                    description = "Daily journal, quick notes, and ideas.",
-                    preset = "celestial",
-                    tags = "Journal,Personal",
-                    chapters = listOf(
-                        todayStr to "# $todayStr\n\nWelcome to your offline Esper journal.\n\nJot down thoughts, math derivations, and research ideas here."
-                    ),
-                    questions = emptyList()
-                )
             }
-            createEsperConfig(root)
         }
-        syncVaultToLocalDatabase()
+        syncWorkspaceToLocalDatabase()
     }
 
     private fun seedBook(
@@ -270,6 +254,7 @@ class VaultManager(
         questions: List<Pair<String, String>>
     ) {
         val dir = createDirectory(root, folderName) ?: return
+        val now = System.currentTimeMillis()
         val meta = linkedMapOf<String, Any?>(
             "id" to "book-" + UUID.randomUUID().toString().take(8),
             "title" to title,
@@ -277,19 +262,20 @@ class VaultManager(
             "coverPreset" to preset,
             "tags" to tags.split(",").map { it.trim() },
             "isPinned" to false,
-            "createdAt" to System.currentTimeMillis(),
-            "updatedAt" to System.currentTimeMillis()
+            "showTitleOnCover" to true,
+            "createdAt" to now,
+            "updatedAt" to now
         )
         writeText(dir, BOOK_META_FILE, gson.toJson(meta), "application/json")
 
-        chapters.forEachIndexed { idx, (chapterTitle, content) ->
-            writeText(dir, chapterFileName(idx + 1, chapterTitle), content, "text/markdown")
+        chapters.forEachIndexed { idx, (chTitle, content) ->
+            writeText(dir, chapterFileName(idx + 1, chTitle), content, "text/markdown")
         }
 
         if (questions.isNotEmpty()) {
             val list = questions.mapIndexed { idx, (prompt, answer) ->
                 mapOf(
-                    "id" to "q-${UUID.randomUUID().toString().take(8)}",
+                    "id" to "q-${System.currentTimeMillis() + idx}",
                     "title" to prompt,
                     "answer" to answer,
                     "position" to idx
@@ -300,31 +286,13 @@ class VaultManager(
 
         val visuals = createDirectory(dir, VISUALS_DIR)
         if (visuals != null) {
-            writeText(visuals, "01_default_sim.html", DEFAULT_SIM_HTML, "text/html")
+            writeText(visuals, "01_keplerian_orbit.html", DEFAULT_SIM_HTML, "text/html")
         }
     }
 
-    private fun createEsperConfig(root: Node) {
-        val esper = findChild(root, ESPER_DIR) ?: createDirectory(root, ESPER_DIR) ?: return
-        if (findChild(esper, CONFIG_FILE) == null) {
-            writeText(
-                esper,
-                CONFIG_FILE,
-                """{"version":3,"theme":"cosmic","activeVault":"${getActiveVaultName().replace("\"", "")}"}""",
-                "application/json"
-            )
-        }
-        if (findChild(esper, SHELVES_FILE) == null) {
-            writeText(esper, SHELVES_FILE, "[]", "application/json")
-        }
-    }
-
-    /**
-     * Reads every book folder and refreshes the Room index. Missing book.json
-     * files are created so every book has stable metadata.
-     */
-    suspend fun syncVaultToLocalDatabase() = withContext(Dispatchers.IO) {
+    suspend fun syncWorkspaceToLocalDatabase() = withContext(Dispatchers.IO) {
         mutex.withLock {
+            val ws = getActiveWorkspace()
             val root = activeRoot() ?: return@withLock
             val books = listChildren(root)
                 .filter { it.isDirectory && !it.name.startsWith(".") }
@@ -353,7 +321,7 @@ class VaultManager(
                 val desc = (metaMap["description"] as? String) ?: ""
                 val preset = (metaMap["coverPreset"] as? String) ?: "celestial"
                 val coverImage = metaMap["coverImage"] as? String
-                val isPinned = (metaMap["isPinned"] as? Boolean) ?: false
+                val showTitle = (metaMap["showTitleOnCover"] as? Boolean) ?: true
                 val tags = when (val t = metaMap["tags"]) {
                     is List<*> -> t.joinToString(",") { it.toString() }
                     is String -> t
@@ -365,15 +333,16 @@ class VaultManager(
                 val createdAt = (metaMap["createdAt"] as? Number)?.toLong() ?: folderModified
                 val updatedAt = (metaMap["updatedAt"] as? Number)?.toLong() ?: folderModified
 
-                // Self-heal missing metadata with a stable id.
                 if (metaFile == null) {
                     val generated = linkedMapOf<String, Any?>(
                         "id" to bookId,
                         "title" to title,
                         "description" to desc,
                         "coverPreset" to preset,
+                        "coverImage" to coverImage,
+                        "showTitleOnCover" to showTitle,
                         "tags" to tags.split(",").map { it.trim() },
-                        "isPinned" to isPinned,
+                        "isPinned" to false,
                         "createdAt" to createdAt,
                         "updatedAt" to updatedAt
                     )
@@ -382,13 +351,14 @@ class VaultManager(
 
                 val notebook = NotebookEntity(
                     id = bookId,
+                    workspaceId = ws.id,
                     title = title,
                     description = desc,
                     ownerSub = "local_vault",
                     visibility = "public",
                     coverPreset = preset,
                     coverImage = coverImage,
-                    isPinned = isPinned,
+                    showTitleOnCover = showTitle,
                     tagsCsv = tags,
                     createdAt = createdAt,
                     updatedAt = updatedAt,
@@ -427,32 +397,24 @@ class VaultManager(
                     listChildren(dir).filter { !it.isDirectory }
                 } ?: emptyList()
 
-                val canvases = visuals.mapIndexedNotNull { idx, node ->
+                val canvases = visuals.mapIndexedNotNull { _, node ->
                     val content = readText(node) ?: return@mapIndexedNotNull null
-                    val kind = when {
-                        node.name.endsWith(".html", true) || node.name.endsWith(".htm", true) -> "html"
-                        node.name.endsWith(".json", true) -> "excalidraw"
-                        else -> "html"
-                    }
-                    val assigned = chapterIndexFromName(node.name)
-                        ?.let { pages.getOrNull(it - 1)?.id }
-                        ?: pages.firstOrNull()?.id
-                        ?: ""
+                    val kind = if (node.name.endsWith(".json", true)) "json" else "html"
+                    val assignedCh = chapterIndexFromName(node.name) ?: 1
                     CanvasEntity(
                         id = canvasId(bookId, node.name),
                         notebookId = bookId,
                         kind = kind,
                         title = visualTitle(node.name),
                         payloadJson = content,
-                        assignedPagesCsv = assigned
+                        assignedChapter = assignedCh
                     )
                 }
                 db.dao().deleteCanvasesForNotebook(bookId)
                 if (canvases.isNotEmpty()) db.dao().upsertCanvases(canvases)
             }
 
-            // Drop index rows whose folders disappeared from the vault.
-            db.dao().getAllNotebooksList().forEach { local ->
+            db.dao().getNotebooksByWorkspace(ws.id).forEach { local ->
                 if (local.id !in foundBookIds) {
                     db.dao().deleteNotebookCascade(local.id)
                 }
@@ -503,7 +465,7 @@ class VaultManager(
             }
             val nextIndex = (existing.mapNotNull { chapterIndexFromName(it.name) }.maxOrNull() ?: 0) + 1
             val fileName = chapterFileName(nextIndex, title)
-            val content = "# $title\n\nStart writing notes..."
+            val content = "# $title\n\n"
             if (!writeText(book, fileName, content, "text/markdown")) return@withLock null
             touchBookMeta(book)
             PageEntity(
@@ -536,9 +498,12 @@ class VaultManager(
         coverImage: String?
     ): NotebookEntity? = withContext(Dispatchers.IO) {
         mutex.withLock {
+            val ws = getActiveWorkspace()
             val root = activeRoot() ?: return@withLock null
             val folderName = uniqueBookFolderName(root, title)
             val book = createDirectory(root, folderName) ?: return@withLock null
+            createDirectory(book, VISUALS_DIR)
+
             val bookId = "book-" + UUID.randomUUID().toString().take(8)
             val now = System.currentTimeMillis()
             val meta = linkedMapOf<String, Any?>(
@@ -547,6 +512,7 @@ class VaultManager(
                 "description" to description,
                 "coverPreset" to preset,
                 "coverImage" to coverImage,
+                "showTitleOnCover" to true,
                 "tags" to tags.split(",").map { it.trim() }.filter { it.isNotEmpty() },
                 "isPinned" to false,
                 "createdAt" to now,
@@ -554,18 +520,19 @@ class VaultManager(
             )
             writeText(book, BOOK_META_FILE, gson.toJson(meta), "application/json")
             val chapterName = chapterFileName(1, "Introduction")
-            val chapterContent = "# $title\n\nWelcome to your new book. Start writing chapters here.\n"
+            val chapterContent = "# $title\n\nWelcome to your notebook.\n"
             writeText(book, chapterName, chapterContent, "text/markdown")
 
             val notebook = NotebookEntity(
                 id = bookId,
+                workspaceId = ws.id,
                 title = title,
                 description = description,
                 ownerSub = "local_vault",
                 visibility = "public",
                 coverPreset = preset,
                 coverImage = coverImage,
-                isPinned = false,
+                showTitleOnCover = true,
                 tagsCsv = tags,
                 createdAt = now,
                 updatedAt = now,
@@ -599,7 +566,7 @@ class VaultManager(
         tags: String,
         preset: String,
         coverImage: String?,
-        isPinned: Boolean
+        showTitleOnCover: Boolean
     ) = withContext(Dispatchers.IO) {
         mutex.withLock {
             val book = findBook(notebook.id) ?: return@withLock
@@ -613,9 +580,8 @@ class VaultManager(
             meta["description"] = description
             meta["coverPreset"] = preset
             meta["coverImage"] = coverImage
+            meta["showTitleOnCover"] = showTitleOnCover
             meta["tags"] = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            meta["isPinned"] = isPinned
-            meta["createdAt"] = notebook.createdAt
             meta["updatedAt"] = now
             writeText(book, BOOK_META_FILE, gson.toJson(meta), "application/json")
             db.dao().upsertNotebook(
@@ -625,7 +591,7 @@ class VaultManager(
                     tagsCsv = tags,
                     coverPreset = preset,
                     coverImage = coverImage,
-                    isPinned = isPinned,
+                    showTitleOnCover = showTitleOnCover,
                     updatedAt = now
                 )
             )
@@ -640,9 +606,7 @@ class VaultManager(
             val map: MutableMap<String, Any?> = gson.fromJson(raw, type)
             map["updatedAt"] = System.currentTimeMillis()
             writeText(book, BOOK_META_FILE, gson.toJson(map), "application/json")
-        } catch (_: Exception) {
-            // Keep the original metadata if it is not valid JSON.
-        }
+        } catch (_: Exception) {}
     }
 
     // ------------------------------------------------------------ questions
@@ -666,51 +630,33 @@ class VaultManager(
 
     // -------------------------------------------------------------- visuals
 
-    suspend fun createCanvas(
+    suspend fun saveChapterVisual(
         notebookId: String,
-        title: String,
-        kind: String,
-        payload: String,
-        assignedPagesCsv: String
+        chapterIndex1Based: Int,
+        visualTitle: String,
+        htmlContent: String
     ): CanvasEntity? = withContext(Dispatchers.IO) {
         mutex.withLock {
             val book = findBook(notebookId) ?: return@withLock null
             val visuals = findChild(book, VISUALS_DIR) ?: createDirectory(book, VISUALS_DIR)
                 ?: return@withLock null
-            val existing = listChildren(visuals).filter { !it.isDirectory }
-            val next = (existing.mapNotNull { chapterIndexFromName(it.name) }.maxOrNull() ?: 0) + 1
-            val ext = when (kind) {
-                "excalidraw", "draw", "canvas", "whiteboard" -> "json"
-                else -> "html"
-            }
-            val mime = if (ext == "json") "application/json" else "text/html"
-            val fileName = "${next.toString().padStart(2, '0')}_${safeFileName(title.ifBlank { "visual" })}.$ext"
-            if (!writeText(visuals, fileName, payload, mime)) return@withLock null
+
+            val safeTitle = visualTitle.lowercase().replace(Regex("[^a-z0-9]+"), "_")
+            val fileName = String.format("%02d_%s.html", chapterIndex1Based, safeTitle)
+
+            if (!writeText(visuals, fileName, htmlContent, "text/html")) return@withLock null
             touchBookMeta(book)
+
             CanvasEntity(
                 id = canvasId(notebookId, fileName),
                 notebookId = notebookId,
-                kind = kind,
-                title = title.ifBlank { "Companion Visual" },
-                payloadJson = payload,
-                assignedPagesCsv = assignedPagesCsv
+                kind = "html",
+                title = visualTitle.ifBlank { "Companion Visual" },
+                payloadJson = htmlContent,
+                assignedChapter = chapterIndex1Based
             )
         }
     }
-
-    suspend fun updateCanvasPayload(notebookId: String, canvasId: String, payload: String): Boolean =
-        withContext(Dispatchers.IO) {
-            mutex.withLock {
-                val book = findBook(notebookId) ?: return@withLock false
-                val visuals = findChild(book, VISUALS_DIR) ?: return@withLock false
-                val target = listChildren(visuals)
-                    .firstOrNull { !it.isDirectory && canvasId(notebookId, it.name) == canvasId }
-                    ?: return@withLock false
-                val written = writeText(visuals, target.name, payload, mimeFor(target.name))
-                if (written) touchBookMeta(book)
-                written
-            }
-        }
 
     suspend fun deleteCanvas(notebookId: String, canvasId: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
@@ -729,6 +675,7 @@ class VaultManager(
 
     suspend fun importBook(imported: ImportedBook) = withContext(Dispatchers.IO) {
         mutex.withLock {
+            val ws = getActiveWorkspace()
             val root = activeRoot() ?: return@withLock
             val folderName = uniqueBookFolderName(root, imported.title)
             val book = createDirectory(root, folderName) ?: return@withLock
@@ -741,6 +688,7 @@ class VaultManager(
                 "coverImage" to imported.coverImage,
                 "tags" to imported.tagsCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
                 "isPinned" to false,
+                "showTitleOnCover" to true,
                 "createdAt" to now,
                 "updatedAt" to now
             )
@@ -772,22 +720,17 @@ class VaultManager(
                 if (visuals != null) {
                     imported.canvases.forEachIndexed { idx, canvas ->
                         val ext = if (canvas.kind == "html") "html" else "json"
-                        val name = "${(idx + 1).toString().padStart(2, '0')}_${safeFileName(canvas.title)}.$ext"
-                        writeText(
-                            visuals,
-                            name,
-                            canvas.payloadJson,
-                            if (ext == "html") "text/html" else "application/json"
-                        )
+                        val name = String.format("%02d_%s.%s", canvas.assignedChapter, safeFileName(canvas.title), ext)
+                        writeText(visuals, name, canvas.payloadJson, if (ext == "html") "text/html" else "application/json")
                     }
                 }
             }
         }
-        syncVaultToLocalDatabase()
+        syncWorkspaceToLocalDatabase()
     }
 
     fun exportToDownloads(): String {
-        val fileName = "esper-vault-${System.currentTimeMillis() / 1000}.zip"
+        val fileName = "kepler-workspace-${System.currentTimeMillis() / 1000}.zip"
         val outputStream: OutputStream = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = context.contentResolver
             val values = ContentValues().apply {
@@ -799,8 +742,6 @@ class VaultManager(
                 ?: throw IllegalStateException("Could not create Downloads entry")
             resolver.openOutputStream(uri) ?: throw IllegalStateException("Cannot open output stream")
         } else {
-            // Pre-scoped-storage devices: use the app's external Downloads
-            // folder so no broad storage permission is required.
             val downloads = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 ?: context.filesDir
             if (!downloads.exists()) downloads.mkdirs()
@@ -808,7 +749,7 @@ class VaultManager(
         }
 
         ZipOutputStream(outputStream).use { zip ->
-            val root = activeRoot() ?: throw IllegalStateException("Vault is not accessible")
+            val root = kotlinx.coroutines.runBlocking { activeRoot() } ?: throw IllegalStateException("Workspace not accessible")
             writeZipNode(root, zip, "")
         }
         return fileName
@@ -843,7 +784,8 @@ class VaultManager(
         null
     }
 
-    private fun parseQuestions(raw: String, bookId: String): List<QuestionEntity> {        return try {
+    private fun parseQuestions(raw: String, bookId: String): List<QuestionEntity> {
+        return try {
             val type = object : TypeToken<List<Map<String, Any?>>>() {}.type
             val list: List<Map<String, Any?>> = gson.fromJson(raw, type) ?: emptyList()
             list.mapIndexed { idx, q ->
@@ -861,31 +803,16 @@ class VaultManager(
     }
 
     private fun extractChapterTitle(content: String, fileName: String, idx: Int): String {
-        val lines = content.lines()
-        var bodyStart = 0
-        var frontmatterTitle: String? = null
-        if (lines.firstOrNull()?.trim() == "---") {
-            val end = lines.drop(1).indexOfFirst { it.trim() == "---" }
-            if (end >= 0) {
-                bodyStart = end + 2
-                lines.subList(1, end + 1).forEach { line ->
-                    val key = line.substringBefore(":", "").trim()
-                    if (key.equals("title", ignoreCase = true)) {
-                        frontmatterTitle = line.substringAfter(":", "").trim().trim('"', '\'')
-                    }
-                }
+        for (line in content.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("---")) continue
+            if (trimmed.startsWith("#")) {
+                return trimmed.trimStart('#', ' ', '\t').take(100)
             }
+            return trimmed.take(100)
         }
-        val candidate = frontmatterTitle
-            ?: lines.drop(bodyStart).map { it.trim() }.firstOrNull { it.isNotEmpty() }
-        val cleaned = candidate
-            ?.replace(Regex("^[#\\s*_\\->`]+"), "")
-            ?.replace(Regex("[#\\s*_\\->`]+$"), "")
-            ?.trim()
-            ?.take(100)
-        return cleaned?.takeIf { it.isNotEmpty() }
-            ?: stripNumericPrefix(fileName.substringBeforeLast('.'))
-                .ifEmpty { "Chapter ${idx + 1}" }
+        val clean = fileName.removeSuffix(".md").replace(Regex("^[0-9._\\-\\s]+"), "")
+        return clean.ifEmpty { "Chapter ${idx + 1}" }.replace("_", " ")
     }
 
     private fun visualTitle(fileName: String): String =
@@ -914,7 +841,7 @@ class VaultManager(
             .ifEmpty { "untitled" }
 
     private fun chapterFileName(index: Int, title: String): String =
-        "${index.toString().padStart(2, '0')}_${safeFileName(title)}.md"
+        String.format("%02d_%s.md", index, safeFileName(title).replace(" ", "_"))
 
     private fun uniqueBookFolderName(root: Node, title: String): String {
         val base = safeFileName(title).ifEmpty { "New Book" }
@@ -962,7 +889,7 @@ private const val DEFAULT_SIM_HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div class="hud">● keplerian-orbit · offline simulation</div>
+  <div class="hud">● Kepler Orbit Simulation</div>
   <canvas id="c"></canvas>
   <script>
     const c = document.getElementById('c');
@@ -977,12 +904,13 @@ private const val DEFAULT_SIM_HTML = """<!DOCTYPE html>
       const cx = c.width / 2, cy = c.height / 2;
       const a = Math.min(cx, cy) * 0.7, b = a * 0.6;
       ctx.strokeStyle = 'rgba(129, 140, 248, 0.35)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.ellipse(cx, cy, a, b, 0, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = '#fbbf24';
       ctx.beginPath();
-      ctx.arc(cx - Math.sqrt(a*a - b*b), cy, 8, 0, Math.PI * 2);
+      ctx.arc(cx - Math.sqrt(Math.max(0, a*a - b*b)), cy, 8, 0, Math.PI * 2);
       ctx.fill();
       t += 0.02;
       ctx.fillStyle = '#818cf8';

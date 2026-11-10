@@ -29,7 +29,6 @@ import com.esper.android.ui.theme.*
 @Composable
 fun CustomBottomNavBar(
     onOpenLibrary: () -> Unit,
-    onOpenJournal: () -> Unit,
     onOpenTabs: () -> Unit,
     onOpenCreateBook: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -58,17 +57,6 @@ fun CustomBottomNavBar(
                         selectedIconColor = TextPrimary,
                         indicatorColor = IndigoAccent,
                         unselectedIconColor = TextMuted
-                    )
-                )
-
-                NavigationBarItem(
-                    selected = false,
-                    onClick = onOpenJournal,
-                    icon = { Icon(Icons.Default.EditNote, contentDescription = "Journal", modifier = Modifier.size(21.dp)) },
-                    label = { Text("Journal", fontSize = 10.sp) },
-                    colors = NavigationBarItemDefaults.colors(
-                        unselectedIconColor = IndigoGlow,
-                        unselectedTextColor = IndigoGlow
                     )
                 )
 

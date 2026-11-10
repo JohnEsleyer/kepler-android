@@ -10,8 +10,7 @@ class BookSortingTest {
         id: String,
         title: String,
         updatedAt: Long,
-        createdAt: Long = updatedAt,
-        isPinned: Boolean = false
+        createdAt: Long = updatedAt
     ) = NotebookEntity(
         id = id,
         title = title,
@@ -19,86 +18,63 @@ class BookSortingTest {
         ownerSub = "u1",
         tagsCsv = "",
         createdAt = createdAt,
-        updatedAt = updatedAt,
-        isPinned = isPinned
+        updatedAt = updatedAt
     )
 
     private val bookA = book("b1", title = "Alpha Book", updatedAt = 1000L)
     private val bookB = book("b2", title = "bravo book", updatedAt = 3000L)
     private val bookC = book("b3", title = "Charlie Book", updatedAt = 2000L)
-    private val pinnedBook = book("b4", title = "Pinned Zulu", updatedAt = 500L, isPinned = true)
 
-    private val allBooks = listOf(bookA, bookB, bookC, pinnedBook)
+    private val allBooks = listOf(bookA, bookB, bookC)
 
     private fun sort(books: List<NotebookEntity>, option: BookSortOption): List<NotebookEntity> {
-        val nonJournal = books.filter { !it.id.startsWith("esper-journal") }
         return when (option) {
-            BookSortOption.RECENTLY_UPDATED -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenByDescending { it.updatedAt }
-            )
-            BookSortOption.OLDEST_UPDATED -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenBy { it.updatedAt }
-            )
-            BookSortOption.RECENTLY_CREATED -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenByDescending { it.createdAt }
-            )
-            BookSortOption.OLDEST_CREATED -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenBy { it.createdAt }
-            )
-            BookSortOption.TITLE_AZ -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title }
-            )
-            BookSortOption.TITLE_ZA -> nonJournal.sortedWith(
-                compareByDescending<NotebookEntity> { it.isPinned }.thenByDescending(String.CASE_INSENSITIVE_ORDER) { it.title }
-            )
+            BookSortOption.RECENTLY_UPDATED -> books.sortedByDescending { it.updatedAt }
+            BookSortOption.OLDEST_UPDATED -> books.sortedBy { it.updatedAt }
+            BookSortOption.RECENTLY_CREATED -> books.sortedByDescending { it.createdAt }
+            BookSortOption.OLDEST_CREATED -> books.sortedBy { it.createdAt }
+            BookSortOption.TITLE_AZ -> books.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            BookSortOption.TITLE_ZA -> books.sortedWith(compareByDescending(String.CASE_INSENSITIVE_ORDER) { it.title })
         }
     }
 
     @Test
-    fun `recently updated sorts pinned first, then by updatedAt descending`() {
+    fun `recently updated sorts by updatedAt descending`() {
         val result = sort(allBooks, BookSortOption.RECENTLY_UPDATED)
-        assertEquals(listOf(pinnedBook, bookB, bookC, bookA), result)
+        assertEquals(listOf(bookB, bookC, bookA), result)
     }
 
     @Test
-    fun `oldest updated sorts pinned first, then by updatedAt ascending`() {
+    fun `oldest updated sorts by updatedAt ascending`() {
         val result = sort(allBooks, BookSortOption.OLDEST_UPDATED)
-        assertEquals(listOf(pinnedBook, bookA, bookC, bookB), result)
+        assertEquals(listOf(bookA, bookC, bookB), result)
     }
 
     @Test
-    fun `title A-Z sorts pinned first, then by title case-insensitive ascending`() {
+    fun `title A-Z sorts by title case-insensitive ascending`() {
         val result = sort(allBooks, BookSortOption.TITLE_AZ)
-        assertEquals(listOf(pinnedBook, bookA, bookB, bookC), result)
+        assertEquals(listOf(bookA, bookB, bookC), result)
     }
 
     @Test
-    fun `title Z-A sorts pinned first, then by title case-insensitive descending`() {
+    fun `title Z-A sorts by title case-insensitive descending`() {
         val result = sort(allBooks, BookSortOption.TITLE_ZA)
-        assertEquals(listOf(pinnedBook, bookC, bookB, bookA), result)
+        assertEquals(listOf(bookC, bookB, bookA), result)
     }
 
     @Test
-    fun `recently created sorts pinned first, then by createdAt descending`() {
-        // Recency of creation is independent of last edit time.
+    fun `recently created sorts by createdAt descending`() {
         val newlyCreated = book("b5", title = "New", updatedAt = 100L, createdAt = 9000L)
         val oldButEdited = book("b6", title = "Old", updatedAt = 9000L, createdAt = 100L)
-        val result = sort(listOf(oldButEdited, newlyCreated, pinnedBook), BookSortOption.RECENTLY_CREATED)
-        assertEquals(listOf(pinnedBook, newlyCreated, oldButEdited), result)
+        val result = sort(listOf(oldButEdited, newlyCreated), BookSortOption.RECENTLY_CREATED)
+        assertEquals(listOf(newlyCreated, oldButEdited), result)
     }
 
     @Test
-    fun `oldest created sorts pinned first, then by createdAt ascending`() {
+    fun `oldest created sorts by createdAt ascending`() {
         val newlyCreated = book("b5", title = "New", updatedAt = 100L, createdAt = 9000L)
         val oldButEdited = book("b6", title = "Old", updatedAt = 9000L, createdAt = 100L)
-        val result = sort(listOf(newlyCreated, oldButEdited, pinnedBook), BookSortOption.OLDEST_CREATED)
-        assertEquals(listOf(pinnedBook, oldButEdited, newlyCreated), result)
-    }
-
-    @Test
-    fun `journal entries are filtered out of sorting`() {
-        val journal = book("esper-journal-u1", title = "Journal", updatedAt = 99999L)
-        val result = sort(listOf(journal, bookA), BookSortOption.RECENTLY_UPDATED)
-        assertEquals(listOf(bookA), result)
+        val result = sort(listOf(newlyCreated, oldButEdited), BookSortOption.OLDEST_CREATED)
+        assertEquals(listOf(oldButEdited, newlyCreated), result)
     }
 }

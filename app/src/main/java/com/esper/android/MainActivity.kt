@@ -1,13 +1,16 @@
 package com.esper.android
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.documentfile.provider.DocumentFile
 import androidx.room.Room
@@ -16,12 +19,10 @@ import com.esper.android.data.local.EsperDatabase
 import com.esper.android.data.model.*
 import com.esper.android.data.vault.VaultManager
 import com.esper.android.ui.bookshelf.AllTagsScreen
-import com.esper.android.ui.bookshelf.BookshelfFiltering
 import com.esper.android.ui.bookshelf.BookshelfScreen
 import com.esper.android.ui.bookshelf.ConfigureNotebookScreen
 import com.esper.android.ui.bookshelf.CreateNotebookScreen
 import com.esper.android.ui.bookshelf.SettingsScreen
-import com.esper.android.ui.journal.JournalScreen
 import com.esper.android.ui.theme.EsperTheme
 import com.esper.android.ui.workspace.QuestionEditorScreen
 import com.esper.android.ui.workspace.RecentPageItem
@@ -39,20 +40,24 @@ enum class ActiveScreen {
     SETTINGS,
     CREATE_NOTEBOOK,
     CONFIGURE_NOTEBOOK,
-    WORKSPACE,
-    JOURNAL
+    WORKSPACE
 }
 
 class MainActivity : ComponentActivity() {
 
+
     private val db by lazy {
-        Room.databaseBuilder(applicationContext, EsperDatabase::class.java, "esper_offline.db")
+        Room.databaseBuilder(applicationContext, EsperDatabase::class.java, "kepler_offline.db")
             .fallbackToDestructiveMigration()
             .build()
     }
 
     private val vaultManager by lazy {
         VaultManager(applicationContext, db)
+    }
+
+    private val bookmarkPrefs by lazy {
+        getSharedPreferences("kepler_bookmarks", Context.MODE_PRIVATE)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,25 +80,48 @@ class MainActivity : ComponentActivity() {
                 var recentPageItems by remember { mutableStateOf<List<RecentPageItem>>(emptyList()) }
                 var isTabsSheetOpen by remember { mutableStateOf(false) }
 
-                var vaultName by remember { mutableStateOf(vaultManager.getActiveVaultName()) }
-                var vaultLocation by remember { mutableStateOf(vaultManager.getActiveVaultLocation()) }
-
-                val notebooks by db.dao().observeAllNotebooks().collectAsState(initial = emptyList())
-                val shelves by db.dao().observeAllShelves().collectAsState(initial = emptyList())
-                val allDetails by db.dao().observeAllNotebooksWithDetails().collectAsState(initial = emptyList())
-
-                suspend fun rescanVault() {
-                    withContext(Dispatchers.IO) {
-                        vaultManager.seedDefaultVaultIfEmpty()
-                        vaultManager.syncVaultToLocalDatabase()
-                    }
-                    vaultName = vaultManager.getActiveVaultName()
-                    vaultLocation = vaultManager.getActiveVaultLocation()
+                val workspaces by db.dao().observeAllWorkspaces().collectAsState(initial = emptyList())
+                var activeWorkspace by remember {
+                    mutableStateOf(
+                        WorkspaceEntity(
+                            id = VaultManager.DEFAULT_WORKSPACE_ID,
+                            name = VaultManager.DEFAULT_WORKSPACE_NAME,
+                            treeUriString = null,
+                            isDefault = true
+                        )
+                    )
                 }
 
-                // First run: create the starter vault, then index whatever folder is active.
+                // Local-only bookmarks
+                var bookmarkIds by remember {
+                    mutableStateOf(bookmarkPrefs.getStringSet("bookmarked_ids", emptySet()) ?: emptySet())
+                }
+
+                fun toggleBookmark(bookId: String) {
+                    val next = bookmarkIds.toMutableSet()
+                    if (next.contains(bookId)) next.remove(bookId) else next.add(bookId)
+                    bookmarkIds = next
+                    bookmarkPrefs.edit().putStringSet("bookmarked_ids", next).apply()
+                }
+
+                fun clearAllBookmarks() {
+                    bookmarkIds = emptySet()
+                    bookmarkPrefs.edit().remove("bookmarked_ids").apply()
+                }
+
+                val notebooks by db.dao().observeNotebooksForWorkspace(activeWorkspace.id).collectAsState(initial = emptyList())
+                val allDetails by db.dao().observeNotebooksWithDetailsForWorkspace(activeWorkspace.id).collectAsState(initial = emptyList())
+
+                suspend fun rescanCurrentWorkspace() {
+                    withContext(Dispatchers.IO) {
+                        activeWorkspace = vaultManager.getActiveWorkspace()
+                        vaultManager.seedDefaultWorkspaceIfEmpty()
+                        vaultManager.syncWorkspaceToLocalDatabase()
+                    }
+                }
+
                 LaunchedEffect(Unit) {
-                    rescanVault()
+                    rescanCurrentWorkspace()
                 }
 
                 fun navigateTo(screen: ActiveScreen) {
@@ -130,6 +158,7 @@ class MainActivity : ComponentActivity() {
                         item.copy(notebook = nb)
                     }
                 }
+
                 val resolvedRecent = remember(recentPageItems, notebooks) {
                     recentPageItems.filter { item ->
                         notebooks.isEmpty() || notebooks.any { it.id == item.notebook.id }
@@ -201,26 +230,37 @@ class MainActivity : ComponentActivity() {
                     vaultManager.saveQuestions(bookId, details.questions)
                 }
 
+                val folderPickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocumentTree()
+                ) { uri: Uri? ->
+                    if (uri != null) {
+                        try {
+                            contentResolver.takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {}
+                        val displayName = DocumentFile.fromTreeUri(applicationContext, uri)?.name
+                            ?: uri.lastPathSegment
+                            ?: "Workspace Folder"
+                        coroutineScope.launch {
+                            val added = vaultManager.addWorkspace(displayName, uri)
+                            activeWorkspace = added
+                            rescanCurrentWorkspace()
+                            Toast.makeText(applicationContext, "Opened workspace: ${added.name}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+
                 var customTags by remember {
                     mutableStateOf(listOf("Astrodynamics", "Physics", "Quantum", "Research"))
                 }
 
                 val allTags = remember(notebooks, customTags) {
-                    val extracted = notebooks.filter {
-                        !it.title.contains("Journal", ignoreCase = true) &&
-                            !it.tagsCsv.split(",").any { tag -> tag.trim().equals("Journal", true) }
-                    }
-                        .flatMap { it.tagsCsv.split(",") }
+                    val extracted = notebooks.flatMap { it.tagsCsv.split(",") }
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                     listOf("All") + (customTags + extracted).distinct()
-                }
-
-                val journalNotebook = remember(notebooks) {
-                    notebooks.find {
-                        it.title.contains("Journal", ignoreCase = true) ||
-                            it.tagsCsv.split(",").any { tag -> tag.trim().equals("Journal", true) }
-                    }
                 }
 
                 if (isTabsSheetOpen) {
@@ -278,93 +318,19 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    ActiveScreen.JOURNAL -> {
-                        val journalId = journalNotebook?.id ?: "journal-default"
-                        val journalDetails by db.dao().observeNotebookDetails(journalId)
-                            .collectAsState(initial = null)
-                        val journalPages = remember(journalDetails) {
-                            (journalDetails?.pages ?: emptyList()).sortedBy { it.position }
-                        }
-
-                        JournalScreen(
-                            pages = journalPages,
-                            onSavePageNotes = { pageId, text ->
-                                val onDisk = vaultManager.saveChapterNotes(journalId, pageId, text)
-                                val derivedTitle = deriveChapterTitle(text)
-                                db.dao().updatePageNotesAndTitle(journalId, pageId, text, derivedTitle)
-                                db.dao().updateNotebookNotesUpdatedAt(journalId, System.currentTimeMillis())
-                                onDisk
-                            },
-                            onCreateNewPage = { dateTitle ->
-                                coroutineScope.launch {
-                                    val created = vaultManager.createChapter(journalId, dateTitle)
-                                    if (created != null) {
-                                        db.dao().upsertPage(created)
-                                    } else {
-                                        val newPageId = "jp-${UUID.randomUUID().toString().take(8)}"
-                                        db.dao().upsertPage(
-                                            PageEntity(
-                                                id = newPageId,
-                                                notebookId = journalId,
-                                                title = dateTitle,
-                                                notes = "# $dateTitle\n\n",
-                                                position = journalPages.size
-                                            )
-                                        )
-                                    }
-                                }
-                            },
-                            onDeletePage = { pageId ->
-                                coroutineScope.launch {
-                                    vaultManager.deleteChapter(journalId, pageId)
-                                    db.dao().deletePageAndChildren(journalId, pageId)
-                                }
-                            },
-                            onSyncWithRemote = {
-                                withContext(Dispatchers.IO) {
-                                    vaultManager.syncVaultToLocalDatabase()
-                                }
-                            },
-                            onNavigateBack = { popScreen() }
-                        )
-                    }
-
                     ActiveScreen.SETTINGS -> {
                         SettingsScreen(
-                            vaultName = vaultName,
-                            vaultLocation = vaultLocation,
+                            workspaceName = activeWorkspace.name,
+                            workspaceLocation = activeWorkspace.treeUriString ?: vaultManager.getDefaultWorkspaceDir().absolutePath,
                             notebookCount = notebooks.size,
-                            shelfCount = shelves.size,
-                            onRescanVault = {
+                            onRescanWorkspace = {
                                 coroutineScope.launch {
-                                    rescanVault()
-                                    Toast.makeText(applicationContext, "Vault scanned & indexed", Toast.LENGTH_SHORT).show()
+                                    rescanCurrentWorkspace()
+                                    Toast.makeText(applicationContext, "Workspace indexed", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            onSelectVaultFolder = { uri ->
-                                try {
-                                    contentResolver.takePersistableUriPermission(
-                                        uri,
-                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                                    )
-                                } catch (_: Exception) {
-                                    // Some providers grant only temporary access; still try to open it.
-                                }
-                                val display = DocumentFile.fromTreeUri(applicationContext, uri)?.name
-                                    ?: uri.lastPathSegment
-                                    ?: "External Vault"
-                                vaultManager.setCustomVaultUri(uri, display)
-                                coroutineScope.launch {
-                                    rescanVault()
-                                    Toast.makeText(applicationContext, "Vault folder loaded", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onResetToDefaultVault = {
-                                vaultManager.setCustomVaultUri(null)
-                                coroutineScope.launch {
-                                    rescanVault()
-                                    Toast.makeText(applicationContext, "Switched to internal vault", Toast.LENGTH_SHORT).show()
-                                }
+                            onSelectWorkspaceFolder = { uri ->
+                                folderPickerLauncher.launch(uri)
                             },
                             onExportZip = {
                                 coroutineScope.launch {
@@ -382,14 +348,10 @@ class MainActivity : ComponentActivity() {
                                 coroutineScope.launch {
                                     try {
                                         val imported = withContext(Dispatchers.IO) {
-                                            ZipImporter.importPackage(applicationContext, uri, db, "local_vault")
+                                            ZipImporter.importPackage(applicationContext, uri, db, activeWorkspace.id)
                                         }
                                         vaultManager.importBook(imported)
-                                        Toast.makeText(
-                                            applicationContext,
-                                            "Imported: ${imported.title}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
+                                        Toast.makeText(applicationContext, "Imported: ${imported.title}", Toast.LENGTH_SHORT).show()
                                         openBookDirect(imported.id)
                                     } catch (e: Exception) {
                                         Toast.makeText(applicationContext, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
@@ -408,7 +370,7 @@ class MainActivity : ComponentActivity() {
                                     if (newBook != null) {
                                         openBookDirect(newBook.id)
                                     } else {
-                                        Toast.makeText(applicationContext, "Could not create book folder", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(applicationContext, "Could not create notebook", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             },
@@ -421,38 +383,7 @@ class MainActivity : ComponentActivity() {
                             key(targetBook.id) {
                                 ConfigureNotebookScreen(
                                     notebook = targetBook,
-                                    shelves = shelves,
-                                    onToggleBookShelf = { bookId, shelfId ->
-                                        coroutineScope.launch {
-                                            val targetShelf = shelves.find { it.id == shelfId } ?: return@launch
-                                            val updatedCsv = BookshelfFiltering.toggleBookOnShelf(targetShelf.notebookIdsCsv, bookId)
-                                            db.dao().upsertShelf(
-                                                targetShelf.copy(
-                                                    notebookIdsCsv = updatedCsv,
-                                                    updatedAt = System.currentTimeMillis()
-                                                )
-                                            )
-                                        }
-                                    },
-                                    onCreateShelf = { title, desc, color, initialBookId ->
-                                        coroutineScope.launch {
-                                            val newShelfId = "shelf-${UUID.randomUUID().toString().take(8)}"
-                                            val initialIds = if (initialBookId != null) listOf(initialBookId) else emptyList()
-                                            db.dao().upsertShelf(
-                                                ShelfEntity(
-                                                    id = newShelfId,
-                                                    title = title,
-                                                    description = desc,
-                                                    color = color,
-                                                    coverPreset = "midnight",
-                                                    position = shelves.size,
-                                                    notebookIdsCsv = initialIds.joinToString(","),
-                                                    updatedAt = System.currentTimeMillis()
-                                                )
-                                            )
-                                        }
-                                    },
-                                    onSaveConfig = { title, desc, tags, preset, coverImage, _, _, isBookmarked ->
+                                    onSaveConfig = { title, desc, tags, preset, coverImage, showTitle ->
                                         coroutineScope.launch {
                                             vaultManager.updateBookConfig(
                                                 notebook = targetBook,
@@ -461,7 +392,7 @@ class MainActivity : ComponentActivity() {
                                                 tags = tags,
                                                 preset = preset,
                                                 coverImage = coverImage,
-                                                isPinned = isBookmarked
+                                                showTitleOnCover = showTitle
                                             )
                                             Toast.makeText(applicationContext, "Book settings updated", Toast.LENGTH_SHORT).show()
                                         }
@@ -507,7 +438,6 @@ class MainActivity : ComponentActivity() {
                                         questions = book.questions,
                                         activePageIndex = activePageIndex,
                                         onOpenTabsScreen = { isTabsSheetOpen = true },
-                                        onOpenJournal = { navigateTo(ActiveScreen.JOURNAL) },
                                         onOpenConfigureBook = {
                                             configuringNotebook = book.notebook
                                             navigateTo(ActiveScreen.CONFIGURE_NOTEBOOK)
@@ -564,15 +494,14 @@ class MainActivity : ComponentActivity() {
                                             db.dao().updateNotebookNotesUpdatedAt(book.notebook.id, System.currentTimeMillis())
                                             onDisk
                                         },
-                                        onAttachCanvas = { title, kind, payload ->
+                                        onAttachCanvas = { title, _, payload ->
                                             coroutineScope.launch {
-                                                val activePageId = sortedPages.getOrNull(activePageIndex)?.id ?: ""
-                                                val created = vaultManager.createCanvas(
+                                                val chIndex = activePageIndex + 1
+                                                val created = vaultManager.saveChapterVisual(
                                                     notebookId = book.notebook.id,
-                                                    title = title,
-                                                    kind = kind,
-                                                    payload = payload,
-                                                    assignedPagesCsv = activePageId
+                                                    chapterIndex1Based = chIndex,
+                                                    visualTitle = title,
+                                                    htmlContent = payload
                                                 )
                                                 if (created != null) db.dao().upsertCanvas(created)
                                             }
@@ -585,8 +514,15 @@ class MainActivity : ComponentActivity() {
                                         },
                                         onUpdateCanvasPayload = { canvasId, payload ->
                                             coroutineScope.launch {
-                                                vaultManager.updateCanvasPayload(book.notebook.id, canvasId, payload)
+                                                val chIndex = activePageIndex + 1
                                                 val existing = book.canvases.find { it.id == canvasId }
+                                                val vTitle = existing?.title ?: "Simulation"
+                                                vaultManager.saveChapterVisual(
+                                                    notebookId = book.notebook.id,
+                                                    chapterIndex1Based = chIndex,
+                                                    visualTitle = vTitle,
+                                                    htmlContent = payload
+                                                )
                                                 if (existing != null) {
                                                     db.dao().upsertCanvas(existing.copy(payloadJson = payload))
                                                 }
@@ -594,7 +530,7 @@ class MainActivity : ComponentActivity() {
                                         },
                                         onCreateQuestion = { qTitle ->
                                             coroutineScope.launch {
-                                                val qId = "q-${UUID.randomUUID().toString().take(8)}"
+                                                val qId = "q-${System.currentTimeMillis()}"
                                                 val newQ = QuestionEntity(
                                                     id = qId,
                                                     notebookId = book.notebook.id,
@@ -616,7 +552,7 @@ class MainActivity : ComponentActivity() {
                                         onOpenQuestionEditor = { question -> activeEditingQuestion = question },
                                         onSyncWithRemote = {
                                             withContext(Dispatchers.IO) {
-                                                vaultManager.syncVaultToLocalDatabase()
+                                                vaultManager.syncWorkspaceToLocalDatabase()
                                             }
                                         }
                                     )
@@ -628,9 +564,11 @@ class MainActivity : ComponentActivity() {
                     ActiveScreen.BOOKSHELF -> {
                         BookshelfScreen(
                             notebooks = notebooks,
-                            shelves = shelves,
+                            workspaces = workspaces,
+                            activeWorkspace = activeWorkspace,
                             allDetails = allDetails,
                             selectedTagFilter = selectedTagFilter,
+                            bookmarkIds = bookmarkIds,
                             onSelectTagFilter = { selectedTagFilter = it },
                             onOpenNotebook = { id -> openBookDirect(id) },
                             onConfigureNotebook = { book ->
@@ -643,77 +581,19 @@ class MainActivity : ComponentActivity() {
                                     openTabItems = openTabItems.filter { it.notebook.id != id }
                                 }
                             },
-                            onToggleBookmark = { bookId ->
+                            onToggleBookmark = { bookId -> toggleBookmark(bookId) },
+                            onClearAllBookmarks = { clearAllBookmarks() },
+                            onSelectWorkspace = { wsId ->
                                 coroutineScope.launch {
-                                    val target = notebooks.find { it.id == bookId } ?: return@launch
-                                    vaultManager.updateBookConfig(
-                                        notebook = target,
-                                        title = target.title,
-                                        description = target.description,
-                                        tags = target.tagsCsv,
-                                        preset = target.coverPreset,
-                                        coverImage = target.coverImage,
-                                        isPinned = !target.isPinned
-                                    )
+                                    vaultManager.setActiveWorkspace(wsId)
+                                    rescanCurrentWorkspace()
                                 }
                             },
+                            onOpenFolderWorkspace = { folderPickerLauncher.launch(null) },
                             onOpenAllTagsScreen = { navigateTo(ActiveScreen.ALL_TAGS) },
                             onOpenTabsScreen = { isTabsSheetOpen = true },
                             onOpenSettingsScreen = { navigateTo(ActiveScreen.SETTINGS) },
-                            onOpenCreateNotebookScreen = { navigateTo(ActiveScreen.CREATE_NOTEBOOK) },
-                            onOpenJournalScreen = {
-                                if (journalNotebook == null) {
-                                    coroutineScope.launch {
-                                        vaultManager.createBook(
-                                            title = "Personal Journal",
-                                            description = "Daily journal, quick notes, and ideas.",
-                                            tags = "Journal,Personal",
-                                            preset = "celestial",
-                                            coverImage = null
-                                        )
-                                    }
-                                }
-                                navigateTo(ActiveScreen.JOURNAL)
-                            },
-                            onDeleteShelf = { id ->
-                                coroutineScope.launch { db.dao().deleteShelf(id) }
-                            },
-                            onCreateShelf = { title, desc, color, initialBookId ->
-                                coroutineScope.launch {
-                                    val newShelfId = "shelf-${UUID.randomUUID().toString().take(8)}"
-                                    val initialIds = if (initialBookId != null) listOf(initialBookId) else emptyList()
-                                    db.dao().upsertShelf(
-                                        ShelfEntity(
-                                            id = newShelfId,
-                                            title = title,
-                                            description = desc,
-                                            color = color,
-                                            coverPreset = "midnight",
-                                            position = shelves.size,
-                                            notebookIdsCsv = initialIds.joinToString(","),
-                                            updatedAt = System.currentTimeMillis()
-                                        )
-                                    )
-                                }
-                            },
-                            onToggleBookShelf = { bookId, shelfId ->
-                                coroutineScope.launch {
-                                    val targetShelf = shelves.find { it.id == shelfId } ?: return@launch
-                                    val updatedCsv = BookshelfFiltering.toggleBookOnShelf(targetShelf.notebookIdsCsv, bookId)
-                                    db.dao().upsertShelf(
-                                        targetShelf.copy(
-                                            notebookIdsCsv = updatedCsv,
-                                            updatedAt = System.currentTimeMillis()
-                                        )
-                                    )
-                                }
-                            },
-                            onSyncWithRemote = {
-                                coroutineScope.launch {
-                                    rescanVault()
-                                    Toast.makeText(applicationContext, "Vault re-indexed", Toast.LENGTH_SHORT).show()
-                                }
-                            }
+                            onOpenCreateNotebookScreen = { navigateTo(ActiveScreen.CREATE_NOTEBOOK) }
                         )
                     }
                 }

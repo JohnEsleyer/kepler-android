@@ -105,12 +105,10 @@ fun WorkspaceScreen(
         if (isReadOnly) action() else unsavedGuard.requestNavigation(action)
     }
 
-    val attachedCanvas = remember(canvases, activePage?.id) {
-        activePage?.let { page ->
-            canvases.firstOrNull { c ->
-                c.assignedPagesCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() }.contains(page.id)
-            }
-        }
+    val attachedCanvas = remember(canvases, activePageIndex) {
+        // Visuals are strictly per chapter matching the 1-based index (e.g. 01_orbit.html)
+        val chapterNum1Based = activePageIndex + 1
+        canvases.firstOrNull { it.assignedChapter == chapterNum1Based }
     }
 
     val hasAttachment = attachedCanvas != null
@@ -246,30 +244,7 @@ fun WorkspaceScreen(
                                 tonalElevation = 0.dp,
                                 modifier = Modifier.height(58.dp)
                             ) {
-                                // LEFT — Journal
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { guardNavigation { onOpenJournal() } },
-                                    icon = {
-                                        Icon(
-                                            Icons.Default.EditNote,
-                                            contentDescription = "Journal",
-                                            tint = IndigoGlow,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    },
-                                    label = {
-                                        Text(
-                                            "Journal",
-                                            color = IndigoGlow,
-                                            fontSize = 10.sp
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        indicatorColor = IndigoGlow.copy(alpha = 0.15f)
-                                    )
-                                )
-                                // CENTER — Chapters sidebar
+                                // LEFT — Chapters sidebar
                                 NavigationBarItem(
                                     selected = false,
                                     onClick = { coroutineScope.launch { leftChaptersDrawerState.open() } },
@@ -373,9 +348,6 @@ fun WorkspaceScreen(
                                     onHasUnsavedChangesChanged = { unsavedGuard.setDirty(it) },
                                     onSave = { updatedNotes ->
                                         onSaveNotes(page.id, updatedNotes)
-                                    },
-                                    onRefresh = {
-                                        onSyncWithRemote()
                                     },
                                     onTimestampClicked = { seconds ->
                                         Toast.makeText(context, "Timestamp: ${seconds}s", Toast.LENGTH_SHORT).show()
@@ -561,9 +533,6 @@ fun WorkspaceScreen(
                                             onHasUnsavedChangesChanged = { unsavedGuard.setDirty(it) },
                                             onSave = { updatedNotes ->
                                                 onSaveNotes(page.id, updatedNotes)
-                                            },
-                                            onRefresh = {
-                                                onSyncWithRemote()
                                             },
                                             onTimestampClicked = { seconds ->
                                                 Toast.makeText(context, "Seeking to ${seconds}s", Toast.LENGTH_SHORT).show()

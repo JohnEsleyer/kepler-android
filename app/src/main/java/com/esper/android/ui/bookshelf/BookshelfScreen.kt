@@ -1,4 +1,3 @@
-
 package com.esper.android.ui.bookshelf
 
 import androidx.activity.compose.BackHandler
@@ -16,7 +15,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
@@ -33,15 +31,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.esper.android.data.local.NotebookWithDetails
 import com.esper.android.data.model.NotebookEntity
-import com.esper.android.data.model.ShelfEntity
+import com.esper.android.data.model.WorkspaceEntity
 import com.esper.android.ui.components.BookCard
 import com.esper.android.ui.components.ConfirmDeleteDialog
 import com.esper.android.ui.components.CustomBottomNavBar
 import com.esper.android.ui.components.LocalReadOnlyMode
-import com.esper.android.ui.components.OfflineNoticeBanner
-import com.esper.android.ui.components.PullToRefreshLayout
 import com.esper.android.ui.theme.*
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class BookSortOption(val label: String) {
@@ -57,97 +52,80 @@ enum class BookSortOption(val label: String) {
 @Composable
 fun BookshelfScreen(
     notebooks: List<NotebookEntity>,
-    shelves: List<ShelfEntity>,
+    workspaces: List<WorkspaceEntity>,
+    activeWorkspace: WorkspaceEntity,
     allDetails: List<NotebookWithDetails>,
     selectedTagFilter: String,
+    bookmarkIds: Set<String>,
     onSelectTagFilter: (String) -> Unit,
     onOpenNotebook: (String) -> Unit,
     onConfigureNotebook: (NotebookEntity) -> Unit = {},
     onDeleteNotebook: (String) -> Unit,
     onToggleBookmark: (String) -> Unit = {},
+    onClearAllBookmarks: () -> Unit = {},
+    onSelectWorkspace: (String) -> Unit,
+    onOpenFolderWorkspace: () -> Unit,
     onOpenAllTagsScreen: () -> Unit,
     onOpenTabsScreen: () -> Unit,
     onOpenSettingsScreen: () -> Unit,
-    onOpenCreateNotebookScreen: () -> Unit,
-    onOpenJournalScreen: () -> Unit,
-    onDeleteShelf: (String) -> Unit,
-    onCreateShelf: (title: String, description: String, color: String, initialBookId: String?) -> Unit = { _, _, _, _ -> },
-    onToggleBookShelf: (bookId: String, shelfId: String) -> Unit = { _, _ -> },
-    onSyncWithRemote: () -> Unit
+    onOpenCreateNotebookScreen: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val isReadOnly = LocalReadOnlyMode.current
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedShelfId by remember { mutableStateOf<String?>(null) }
-    var isRefreshing by remember { mutableStateOf(false) }
     var bookToDelete by remember { mutableStateOf<NotebookEntity?>(null) }
-    var shelfToDelete by remember { mutableStateOf<ShelfEntity?>(null) }
-    var bookToSetShelf by remember { mutableStateOf<NotebookEntity?>(null) }
-    var showCreateShelfDialog by remember { mutableStateOf(false) }
-    var createShelfInitialBookId by remember { mutableStateOf<String?>(null) }
+    var showClearBookmarksConfirm by remember { mutableStateOf(false) }
     var currentSort by remember { mutableStateOf(BookSortOption.RECENTLY_CREATED) }
     var sortDropdownExpanded by remember { mutableStateOf(false) }
 
+    // Pagination: 10 notebooks per page (latest created to oldest)
+    var currentPage by remember { mutableIntStateOf(1) }
+    val pageSize = 10
+
     val sortedNotebooks = remember(notebooks, currentSort) {
-        val nonJournal = notebooks.filter {
-            !it.tagsCsv.split(",").map { tag -> tag.trim() }.contains("Journal") &&
-                !it.title.contains("Journal", ignoreCase = true)
-        }
         when (currentSort) {
-            BookSortOption.RECENTLY_CREATED -> nonJournal.sortedByDescending { it.createdAt }
-            BookSortOption.OLDEST_CREATED -> nonJournal.sortedBy { it.createdAt }
-            BookSortOption.RECENTLY_UPDATED -> nonJournal.sortedByDescending {
+            BookSortOption.RECENTLY_CREATED -> notebooks.sortedByDescending { it.createdAt }
+            BookSortOption.OLDEST_CREATED -> notebooks.sortedBy { it.createdAt }
+            BookSortOption.RECENTLY_UPDATED -> notebooks.sortedByDescending {
                 if (it.notesUpdatedAt > 0L) it.notesUpdatedAt else it.updatedAt
             }
-            BookSortOption.OLDEST_UPDATED -> nonJournal.sortedBy {
+            BookSortOption.OLDEST_UPDATED -> notebooks.sortedBy {
                 if (it.notesUpdatedAt > 0L) it.notesUpdatedAt else it.updatedAt
             }
-            BookSortOption.TITLE_AZ -> nonJournal.sortedWith(
+            BookSortOption.TITLE_AZ -> notebooks.sortedWith(
                 compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }
             )
-            BookSortOption.TITLE_ZA -> nonJournal.sortedWith(
+            BookSortOption.TITLE_ZA -> notebooks.sortedWith(
                 compareByDescending(String.CASE_INSENSITIVE_ORDER) { it.title }
             )
         }
     }
 
-    val currentShelf = remember(shelves, selectedShelfId) {
-        shelves.find { it.id == selectedShelfId }
-    }
-
-    val shelfBookIds = remember(currentShelf) {
-        BookshelfFiltering.shelfBookIds(currentShelf)
-    }
-
-    val shelfFilterActive = selectedShelfId != null && currentShelf != null
-
     val filtered = remember(
         sortedNotebooks,
         selectedTagFilter,
         searchQuery,
-        shelfFilterActive,
-        shelfBookIds
+        bookmarkIds
     ) {
         BookshelfFiltering.filter(
             books = sortedNotebooks,
             tagFilter = selectedTagFilter,
             searchQuery = searchQuery,
-            shelfBookIds = shelfBookIds,
-            shelfFilterActive = shelfFilterActive
+            bookmarkIds = bookmarkIds
         )
     }
 
-    fun triggerRefresh() {
-        if (!isRefreshing) {
-            isRefreshing = true
-            onSyncWithRemote()
-            coroutineScope.launch {
-                delay(900)
-                isRefreshing = false
-            }
-        }
+    val totalPages = maxOf(1, (filtered.size + pageSize - 1) / pageSize)
+    val paginatedBooks = remember(filtered, currentPage) {
+        val safePage = currentPage.coerceIn(1, totalPages)
+        val start = (safePage - 1) * pageSize
+        filtered.drop(start).take(pageSize)
+    }
+
+    LaunchedEffect(selectedTagFilter, searchQuery, filtered.size) {
+        currentPage = 1
     }
 
     BackHandler(enabled = drawerState.isOpen) {
@@ -165,214 +143,85 @@ fun BookshelfScreen(
             ) {
                 Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 12.dp)
-                            .clickable {
-                                onOpenSettingsScreen()
-                                coroutineScope.launch { drawerState.close() }
-                            }
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(IndigoAccent),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "V",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Local Vault",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
-                            Text(
-                                text = "Settings & Workspace",
-                                color = TextMuted,
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-
-                    HorizontalDivider(color = BorderSlate, thickness = 1.dp)
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = SurfaceSlate.copy(alpha = 0.5f),
-                        border = BorderStroke(1.dp, BorderSlate),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Storage,
-                                contentDescription = null,
-                                tint = EmeraldSync,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "Pure Offline Vault",
-                                    color = TextPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Folder-backed · zero cloud",
-                                    color = TextMuted,
-                                    fontSize = 10.sp
-                                )
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 8.dp),
+                            .padding(vertical = 12.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Shelves & Collections (${shelves.size})",
+                            text = "Workspaces",
                             color = IndigoGlow,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontSize = 17.sp
                         )
-                        if (!isReadOnly) {
-                            IconButton(
-                                onClick = {
-                                    createShelfInitialBookId = null
-                                    showCreateShelfDialog = true
-                                },
-                                modifier = Modifier.size(26.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = "Create Bookshelf",
-                                    tint = IndigoAccent,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                        IconButton(
+                            onClick = {
+                                coroutineScope.launch { drawerState.close() }
+                                onOpenFolderWorkspace()
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CreateNewFolder,
+                                contentDescription = "Open Folder as Workspace",
+                                tint = EmeraldSync
+                            )
                         }
                     }
+
+                    Text(
+                        text = "Workspaces are system folders backed by Markdown files.",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    HorizontalDivider(color = BorderSlate, thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     LazyColumn(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (selectedShelfId == null) SurfaceSlate else Color.Transparent,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedShelfId = null
-                                        onSelectTagFilter("All")
-                                        coroutineScope.launch { drawerState.close() }
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Folder, contentDescription = null, tint = IndigoGlow, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text("All Notebooks", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                        }
-
-                        if (shelves.isEmpty()) {
-                            item {
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = Color.Transparent,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Text("No bookshelves yet", color = TextMuted, fontSize = 12.sp)
-                                        if (!isReadOnly) {
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = "+ Create a bookshelf",
-                                                color = IndigoGlow,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.clickable {
-                                                    createShelfInitialBookId = null
-                                                    showCreateShelfDialog = true
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        items(shelves) { s ->
-                            val isSelected = s.id == selectedShelfId
-                            val shelfColor = try {
-                                Color(android.graphics.Color.parseColor(s.color))
-                            } catch (_: Exception) {
-                                IndigoAccent
-                            }
-
+                        items(workspaces) { ws ->
+                            val isSelected = ws.id == activeWorkspace.id
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (isSelected) SurfaceSlate else Color.Transparent,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        selectedShelfId = s.id
-                                        onSelectTagFilter("All")
+                                        onSelectWorkspace(ws.id)
                                         coroutineScope.launch { drawerState.close() }
                                     }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(12.dp)
-                                                .clip(CircleShape)
-                                                .background(shelfColor)
+                                    Icon(
+                                        if (ws.isDefault) Icons.Default.Folder else Icons.Default.FolderOpen,
+                                        contentDescription = null,
+                                        tint = if (isSelected) EmeraldSync else IndigoGlow,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            ws.name,
+                                            color = TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                         )
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text(s.title, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                            if (s.description.isNotBlank()) {
-                                                Text(s.description, color = TextMuted, fontSize = 10.sp)
-                                            }
-                                        }
+                                        Text(
+                                            if (ws.isDefault) "Default Internal Folder" else "External Folder",
+                                            color = TextMuted,
+                                            fontSize = 10.sp
+                                        )
                                     }
-                                    if (!isReadOnly) {
-                                        IconButton(
-                                            onClick = { shelfToDelete = s },
-                                            modifier = Modifier.size(24.dp)
-                                        ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = RoseRuby, modifier = Modifier.size(14.dp))
-                                        }
+                                    if (isSelected) {
+                                        Icon(Icons.Default.Check, contentDescription = "Active", tint = EmeraldSync, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -383,8 +232,19 @@ fun BookshelfScreen(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     NavigationDrawerItem(
+                        icon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = EmeraldSync) },
+                        label = { Text("Open Folder as Workspace", color = TextPrimary) },
+                        selected = false,
+                        onClick = {
+                            coroutineScope.launch { drawerState.close() }
+                            onOpenFolderWorkspace()
+                        },
+                        colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
+                    )
+
+                    NavigationDrawerItem(
                         icon = { Icon(Icons.Default.Settings, contentDescription = null, tint = TextSecondary) },
-                        label = { Text("Vault Settings", color = TextSecondary) },
+                        label = { Text("Settings & Archive", color = TextSecondary) },
                         selected = false,
                         onClick = {
                             onOpenSettingsScreen()
@@ -428,7 +288,7 @@ fun BookshelfScreen(
                                     ) {
                                         if (searchQuery.isEmpty()) {
                                             Text(
-                                                text = "Search notebooks, tags...",
+                                                text = "Search books, tags...",
                                                 color = TextMuted,
                                                 fontSize = 13.sp,
                                                 lineHeight = 18.sp
@@ -475,41 +335,73 @@ fun BookshelfScreen(
             bottomBar = {
                 CustomBottomNavBar(
                     onOpenLibrary = {
-                        selectedShelfId = null
                         onSelectTagFilter("All")
                         searchQuery = ""
                     },
-                    onOpenJournal = onOpenJournalScreen,
                     onOpenTabs = onOpenTabsScreen,
                     onOpenCreateBook = onOpenCreateNotebookScreen,
                     onOpenSettings = onOpenSettingsScreen
                 )
             }
         ) { innerPadding ->
-            PullToRefreshLayout(
-                isRefreshing = isRefreshing,
-                onRefresh = { triggerRefresh() },
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
                     .background(SpaceBlack)
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    val quickTags = remember(notebooks) {
-                        val extracted = notebooks.filter { !it.id.startsWith("esper-journal") }
-                            .flatMap { it.tagsCsv.split(",") }
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() && !it.equals("Bookmarks", ignoreCase = true) }
-                            .distinct()
-                            .take(6)
-                        listOf("All", "Bookmarks") + extracted
+                // Quick tags row with overflow "..." button
+                val extractedTags = remember(notebooks) {
+                    notebooks.flatMap { it.tagsCsv.split(",") }
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.equals("Bookmarks", ignoreCase = true) }
+                        .distinct()
+                }
+
+                // First 5 tags, plus "..." button if there are more
+                val maxVisibleQuickTags = 5
+                val visibleTags = remember(extractedTags) {
+                    listOf("All", "Bookmarks") + extractedTags.take(maxVisibleQuickTags)
+                }
+                val hasMoreTags = extractedTags.size > maxVisibleQuickTags
+
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(visibleTags) { tag ->
+                        val isSelected = tag == selectedTagFilter
+                        val isBookmarkTag = tag.equals("Bookmarks", ignoreCase = true)
+                        Surface(
+                            onClick = { onSelectTagFilter(tag) },
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isSelected) (if (isBookmarkTag) AmberGlow else IndigoAccent) else CosmicSlate
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isBookmarkTag) {
+                                    Icon(
+                                        Icons.Default.Bookmark,
+                                        contentDescription = null,
+                                        tint = if (isSelected) Color.Black else AmberGlow,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                Text(
+                                    text = tag,
+                                    color = if (isSelected) (if (isBookmarkTag) Color.Black else TextPrimary) else (if (isBookmarkTag) AmberGlow else TextSecondary),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected || isBookmarkTag) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        }
                     }
 
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    if (hasMoreTags) {
                         item {
                             Surface(
                                 onClick = onOpenAllTagsScreen,
@@ -517,216 +409,206 @@ fun BookshelfScreen(
                                 color = SurfaceSlate,
                                 border = BorderStroke(1.dp, IndigoAccent.copy(alpha = 0.5f))
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Tag, contentDescription = null, tint = IndigoGlow, modifier = Modifier.size(13.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("All Tags", color = IndigoGlow, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
+                                Text(
+                                    text = "...",
+                                    color = IndigoGlow,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                )
                             }
                         }
+                    }
+                }
 
-                        items(quickTags) { tag ->
-                            val isSelected = tag == selectedTagFilter && selectedShelfId == null
-                            val isBookmarkTag = tag.equals("Bookmarks", ignoreCase = true)
-                            Surface(
-                                onClick = {
-                                    selectedShelfId = null
-                                    onSelectTagFilter(tag)
-                                },
-                                shape = RoundedCornerShape(20.dp),
-                                color = if (isSelected) (if (isBookmarkTag) AmberGlow else IndigoAccent) else CosmicSlate
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                // Workspace Header & Sort
+                val headerTitle = when {
+                    selectedTagFilter.equals("Bookmarks", ignoreCase = true) -> "Bookmarks"
+                    selectedTagFilter != "All" -> selectedTagFilter
+                    else -> activeWorkspace.name
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(IndigoAccent)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = headerTitle,
+                                    color = TextPrimary,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1
+                                )
+                            }
+                            Text(
+                                text = "${filtered.size} books · Page $currentPage of $totalPages",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 18.dp)
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (selectedTagFilter.equals("Bookmarks", ignoreCase = true) && bookmarkIds.isNotEmpty()) {
+                                TextButton(
+                                    onClick = { showClearBookmarksConfirm = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
-                                    if (isBookmarkTag) {
-                                        Icon(
-                                            Icons.Default.Bookmark,
-                                            contentDescription = null,
-                                            tint = if (isSelected) Color.Black else AmberGlow,
-                                            modifier = Modifier.size(13.dp)
-                                        )
+                                    Text("Clear All Bookmarks", color = RoseRuby, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+
+                            if (selectedTagFilter != "All" || searchQuery.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        onSelectTagFilter("All")
+                                        searchQuery = ""
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Clear filter", color = IndigoGlow, fontSize = 11.sp)
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+
+                            Box {
+                                Surface(
+                                    onClick = { sortDropdownExpanded = true },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = SurfaceSlate,
+                                    border = BorderStroke(1.dp, BorderSlate)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort", tint = IndigoGlow, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(currentSort.label, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                         Spacer(modifier = Modifier.width(4.dp))
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                                     }
-                                    Text(
-                                        text = tag,
-                                        color = if (isSelected) (if (isBookmarkTag) Color.Black else TextPrimary) else (if (isBookmarkTag) AmberGlow else TextSecondary),
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected || isBookmarkTag) FontWeight.Bold else FontWeight.Medium
-                                    )
+                                }
+
+                                DropdownMenu(
+                                    expanded = sortDropdownExpanded,
+                                    onDismissRequest = { sortDropdownExpanded = false },
+                                    modifier = Modifier.background(CosmicSlate)
+                                ) {
+                                    BookSortOption.values().forEach { option ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    if (currentSort == option) {
+                                                        Icon(Icons.Default.Check, contentDescription = null, tint = IndigoGlow, modifier = Modifier.size(14.dp))
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                    } else {
+                                                        Spacer(modifier = Modifier.width(22.dp))
+                                                    }
+                                                    Text(
+                                                        text = option.label,
+                                                        color = if (currentSort == option) IndigoGlow else TextPrimary,
+                                                        fontWeight = if (currentSort == option) FontWeight.Bold else FontWeight.Normal,
+                                                        fontSize = 13.sp
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                currentSort = option
+                                                sortDropdownExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
+                }
 
-                    val shelfTitle = when {
-                        currentShelf != null -> currentShelf.title
-                        selectedTagFilter.equals("Bookmarks", ignoreCase = true) -> "Bookmarks"
-                        else -> "All Notebooks"
-                    }
-                    val subtitleText = when {
-                        selectedTagFilter.equals("Bookmarks", ignoreCase = true) -> "${filtered.size} bookmarked"
-                        else -> "${filtered.size} books available"
-                    }
-                    val shelfColor = remember(currentShelf) {
-                        try {
-                            currentShelf?.let { Color(android.graphics.Color.parseColor(it.color)) } ?: IndigoAccent
-                        } catch (_: Exception) { IndigoAccent }
-                    }
-
-                    Column(
+                if (paginatedBooks.isEmpty()) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(shelfColor)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = shelfTitle,
-                                        color = TextPrimary,
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        maxLines = 1
-                                    )
-                                }
-                                Text(
-                                    text = subtitleText,
-                                    color = TextMuted,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.padding(start = 18.dp)
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (currentShelf != null && !isReadOnly) {
-                                    IconButton(
-                                        onClick = { shelfToDelete = currentShelf },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Delete,
-                                            contentDescription = "Delete Bookshelf",
-                                            tint = RoseRuby,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                }
-
-                                if (selectedShelfId != null || selectedTagFilter != "All" || searchQuery.isNotEmpty()) {
-                                    TextButton(
-                                        onClick = {
-                                            selectedShelfId = null
-                                            onSelectTagFilter("All")
-                                            searchQuery = ""
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                    ) {
-                                        Text("Clear filter", color = IndigoGlow, fontSize = 11.sp)
-                                    }
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-
-                                Box {
-                                    Surface(
-                                        onClick = { sortDropdownExpanded = true },
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = SurfaceSlate,
-                                        border = BorderStroke(1.dp, BorderSlate)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort", tint = IndigoGlow, modifier = Modifier.size(14.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(currentSort.label, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-
-                                    DropdownMenu(
-                                        expanded = sortDropdownExpanded,
-                                        onDismissRequest = { sortDropdownExpanded = false },
-                                        modifier = Modifier.background(CosmicSlate)
-                                    ) {
-                                        BookSortOption.values().forEach { option ->
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        if (currentSort == option) {
-                                                            Icon(Icons.Default.Check, contentDescription = null, tint = IndigoGlow, modifier = Modifier.size(14.dp))
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                        } else {
-                                                            Spacer(modifier = Modifier.width(22.dp))
-                                                        }
-                                                        Text(
-                                                            text = option.label,
-                                                            color = if (currentSort == option) IndigoGlow else TextPrimary,
-                                                            fontWeight = if (currentSort == option) FontWeight.Bold else FontWeight.Normal,
-                                                            fontSize = 13.sp
-                                                        )
-                                                    }
-                                                },
-                                                onClick = {
-                                                    currentSort = option
-                                                    sortDropdownExpanded = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = TextMuted, modifier = Modifier.size(40.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("No notebooks in this workspace", color = TextSecondary, fontSize = 14.sp)
+                            Text("Tap + below to create your first book", color = TextMuted, fontSize = 12.sp)
+                        }
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        contentPadding = PaddingValues(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        items(paginatedBooks, key = { it.id }) { book ->
+                            BookCard(
+                                notebook = book,
+                                onClick = { onOpenNotebook(book.id) },
+                                onEdit = { onConfigureNotebook(book) },
+                                onDelete = { bookToDelete = book },
+                                onToggleBookmark = { onToggleBookmark(book.id) },
+                                isBookmarked = bookmarkIds.contains(book.id)
+                            )
                         }
                     }
 
-                    if (filtered.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f),
-                            contentAlignment = Alignment.Center
+                    // Pagination footer bar
+                    if (totalPages > 1) {
+                        Surface(
+                            color = CosmicSlate,
+                            border = BorderStroke(1.dp, BorderSlate),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = TextMuted, modifier = Modifier.size(40.dp))
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text("No notebooks found", color = TextSecondary, fontSize = 14.sp)
-                                Text("Pull down to refresh or tap + to create one", color = TextMuted, fontSize = 12.sp)
-                            }
-                        }
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            contentPadding = PaddingValues(14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(filtered, key = { it.id }) { book ->
-                                BookCard(
-                                    notebook = book,
-                                    onClick = { onOpenNotebook(book.id) },
-                                    onEdit = { onConfigureNotebook(book) },
-                                    onDelete = { bookToDelete = book },
-                                    onSetShelf = { bookToSetShelf = book },
-                                    onToggleBookmark = { onToggleBookmark(book.id) }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = { if (currentPage > 1) currentPage-- },
+                                    enabled = currentPage > 1
+                                ) {
+                                    Text("← Prev", color = if (currentPage > 1) IndigoGlow else TextMuted, fontSize = 12.sp)
+                                }
+
+                                Text(
+                                    text = "Page $currentPage / $totalPages",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
+
+                                TextButton(
+                                    onClick = { if (currentPage < totalPages) currentPage++ },
+                                    enabled = currentPage < totalPages
+                                ) {
+                                    Text("Next →", color = if (currentPage < totalPages) IndigoGlow else TextMuted, fontSize = 12.sp)
+                                }
                             }
                         }
                     }
@@ -737,7 +619,7 @@ fun BookshelfScreen(
         bookToDelete?.let { book ->
             ConfirmDeleteDialog(
                 title = "Delete Notebook",
-                message = "Are you sure you want to delete \u201C${book.title}\u201D? All pages, companion visuals, and review questions will be permanently deleted.",
+                message = "Are you sure you want to delete \u201C${book.title}\u201D? All chapters, visuals, and review questions will be permanently removed.",
                 onConfirm = {
                     onDeleteNotebook(book.id)
                     bookToDelete = null
@@ -746,45 +628,16 @@ fun BookshelfScreen(
             )
         }
 
-        shelfToDelete?.let { shelf ->
+        if (showClearBookmarksConfirm) {
             ConfirmDeleteDialog(
-                title = "Delete Bookshelf",
-                message = "Are you sure you want to delete bookshelf \u201C${shelf.title}\u201D? Books on this shelf will not be deleted.",
+                title = "Clear All Bookmarks",
+                message = "Remove all local bookmarks? The books will remain in the workspace.",
+                confirmText = "Clear All",
                 onConfirm = {
-                    if (selectedShelfId == shelf.id) {
-                        selectedShelfId = null
-                    }
-                    onDeleteShelf(shelf.id)
-                    shelfToDelete = null
+                    onClearAllBookmarks()
+                    showClearBookmarksConfirm = false
                 },
-                onDismiss = { shelfToDelete = null }
-            )
-        }
-
-        bookToSetShelf?.let { book ->
-            SetBookToShelfDialog(
-                book = book,
-                shelves = shelves,
-                onToggleShelf = { shelfId -> onToggleBookShelf(book.id, shelfId) },
-                onCreateShelfClick = {
-                    createShelfInitialBookId = book.id
-                    showCreateShelfDialog = true
-                },
-                onDismiss = { bookToSetShelf = null }
-            )
-        }
-
-        if (showCreateShelfDialog) {
-            CreateShelfDialog(
-                onConfirm = { title, desc, color ->
-                    onCreateShelf(title, desc, color, createShelfInitialBookId)
-                    showCreateShelfDialog = false
-                    createShelfInitialBookId = null
-                },
-                onDismiss = {
-                    showCreateShelfDialog = false
-                    createShelfInitialBookId = null
-                }
+                onDismiss = { showClearBookmarksConfirm = false }
             )
         }
     }
