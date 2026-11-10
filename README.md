@@ -1,6 +1,16 @@
 # Esper Android - Headless CLI Build & Run Guide (Linux)
 
-This guide walks you through installing prerequisites, building, and running the `esper-android` project on Linux completely from the command line without opening Android Studio.
+Esper is a **pure offline, folder-backed workspace for books and interactive
+notes**. There is no account system, cloud sync, or network requirement. Books
+are ordinary folders containing Markdown chapters, JSON metadata, and HTML
+visuals; the same vault can be opened in Obsidian, VS Code, Git, or Pandoc.
+
+- Architecture overview: [`docs/esper-main/overview.md`](docs/esper-main/overview.md)
+- Vault format and interoperability: [`docs/vault-spec.md`](docs/vault-spec.md)
+
+The rest of this guide walks you through installing prerequisites, building,
+and running the `esper-android` project on Linux completely from the command
+line without opening Android Studio.
 
 ---
 
