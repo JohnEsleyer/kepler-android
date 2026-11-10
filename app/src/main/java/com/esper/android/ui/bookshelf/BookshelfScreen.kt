@@ -41,7 +41,6 @@ import com.esper.android.ui.components.LocalReadOnlyMode
 import com.esper.android.ui.components.OfflineNoticeBanner
 import com.esper.android.ui.components.PullToRefreshLayout
 import com.esper.android.ui.theme.*
-import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -60,10 +59,8 @@ fun BookshelfScreen(
     notebooks: List<NotebookEntity>,
     shelves: List<ShelfEntity>,
     allDetails: List<NotebookWithDetails>,
-    currentUser: FirebaseUser?,
     selectedTagFilter: String,
     onSelectTagFilter: (String) -> Unit,
-    onSignOut: () -> Unit,
     onOpenNotebook: (String) -> Unit,
     onConfigureNotebook: (NotebookEntity) -> Unit = {},
     onDeleteNotebook: (String) -> Unit,
@@ -76,8 +73,6 @@ fun BookshelfScreen(
     onDeleteShelf: (String) -> Unit,
     onCreateShelf: (title: String, description: String, color: String, initialBookId: String?) -> Unit = { _, _, _, _ -> },
     onToggleBookShelf: (bookId: String, shelfId: String) -> Unit = { _, _ -> },
-    isOfflineMode: Boolean = false,
-    onToggleOfflineMode: (Boolean) -> Unit = {},
     onSyncWithRemote: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -96,7 +91,10 @@ fun BookshelfScreen(
     var sortDropdownExpanded by remember { mutableStateOf(false) }
 
     val sortedNotebooks = remember(notebooks, currentSort) {
-        val nonJournal = notebooks.filter { !it.id.startsWith("esper-journal") }
+        val nonJournal = notebooks.filter {
+            !it.tagsCsv.split(",").map { tag -> tag.trim() }.contains("Journal") &&
+                !it.title.contains("Journal", ignoreCase = true)
+        }
         when (currentSort) {
             BookSortOption.RECENTLY_CREATED -> nonJournal.sortedByDescending { it.createdAt }
             BookSortOption.OLDEST_CREATED -> nonJournal.sortedBy { it.createdAt }
@@ -184,7 +182,7 @@ fun BookshelfScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = (currentUser?.displayName?.firstOrNull() ?: currentUser?.email?.firstOrNull() ?: "U").toString().uppercase(),
+                                text = "V",
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
@@ -193,7 +191,7 @@ fun BookshelfScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = currentUser?.displayName ?: currentUser?.email ?: "Offline Workspace",
+                                text = "Local Vault",
                                 color = TextPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -211,49 +209,36 @@ fun BookshelfScreen(
 
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isOfflineMode) Color(0xFF332005) else SurfaceSlate.copy(alpha = 0.5f),
-                        border = BorderStroke(1.dp, if (isOfflineMode) AmberGlow.copy(alpha = 0.5f) else BorderSlate),
+                        color = SurfaceSlate.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, BorderSlate),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    if (isOfflineMode) Icons.Default.CloudOff else Icons.Default.CloudQueue,
-                                    contentDescription = null,
-                                    tint = if (isOfflineMode) AmberGlow else IndigoGlow,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(
-                                        text = if (isOfflineMode) "Offline Mode" else "Online Mode",
-                                        color = TextPrimary,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = if (isOfflineMode) "Working with local data" else "Cloud sync enabled",
-                                        color = TextMuted,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                            Switch(
-                                checked = isOfflineMode,
-                                onCheckedChange = onToggleOfflineMode,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = AmberGlow,
-                                    checkedTrackColor = AmberGlow.copy(alpha = 0.35f),
-                                    uncheckedThumbColor = IndigoAccent,
-                                    uncheckedTrackColor = SurfaceSlate
-                                )
+                            Icon(
+                                Icons.Default.Storage,
+                                contentDescription = null,
+                                tint = EmeraldSync,
+                                modifier = Modifier.size(18.dp)
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Pure Offline Vault",
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Folder-backed · zero cloud",
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
+                            }
                         }
                     }
 
@@ -398,10 +383,13 @@ fun BookshelfScreen(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     NavigationDrawerItem(
-                        icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, tint = RoseRuby) },
-                        label = { Text("Sign Out / Exit", color = RoseRuby) },
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null, tint = TextSecondary) },
+                        label = { Text("Vault Settings", color = TextSecondary) },
                         selected = false,
-                        onClick = onSignOut,
+                        onClick = {
+                            onOpenSettingsScreen()
+                            coroutineScope.launch { drawerState.close() }
+                        },
                         colors = NavigationDrawerItemDefaults.colors(unselectedContainerColor = Color.Transparent)
                     )
                 }
@@ -411,12 +399,6 @@ fun BookshelfScreen(
         Scaffold(
             topBar = {
                 Column {
-                    if (isOfflineMode) {
-                        OfflineNoticeBanner(
-                            message = "Offline Mode Active — Using local offline data.",
-                            onToggleOnline = { onToggleOfflineMode(false) }
-                        )
-                    }
                     TopAppBar(
                         title = {
                             Surface(

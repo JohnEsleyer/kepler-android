@@ -40,8 +40,6 @@ import com.esper.android.ui.components.OfflineNoticeBanner
 import com.esper.android.ui.components.SimulationSkeleton
 import com.esper.android.ui.components.UnsavedChangesDialog
 import com.esper.android.ui.components.UnsavedChangesGuard
-import com.esper.android.ui.components.YouTubePlayer
-import com.esper.android.ui.components.YouTubePlayerHostState
 import com.esper.android.ui.lexical.ComposeLexicalEditor
 import com.esper.android.ui.theme.*
 import kotlinx.coroutines.delay
@@ -97,7 +95,6 @@ fun WorkspaceScreen(
         pages.sortedWith(compareBy({ it.position }, { it.id }))
     }
     val activePage = sortedPages.getOrNull(activePageIndex)
-    val youtubeHostState = remember { YouTubePlayerHostState() }
 
     // Unsaved-draft protection: every exit vector (system back, top bar back,
     // chapter switch, tabs, journal, configure book) goes through this guard.
@@ -403,12 +400,19 @@ fun WorkspaceScreen(
                                 if (isDraggingSplitter || !isAttachmentReady || canvas == null) {
                                     SimulationSkeleton(label = "Rendering ${canvas?.title ?: "attachment"}...")
                                 } else if (canvas.kind == "youtube") {
-                                    val ytId = extractYouTubeId(canvas.payloadJson)
-                                    YouTubePlayer(
-                                        videoId = ytId,
-                                        hostState = youtubeHostState,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(SpaceBlack),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "Video attachments are disabled in the offline edition.\nUse an HTML simulation or whiteboard instead.",
+                                            color = TextMuted,
+                                            fontSize = 12.sp,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        )
+                                    }
                                 } else if (canvas.kind == "draw" || canvas.kind == "excalidraw" || canvas.kind == "canvas" || canvas.kind == "whiteboard") {
                                     DrawingCanvasView(
                                         rawJson = canvas.payloadJson,
@@ -563,7 +567,6 @@ fun WorkspaceScreen(
                                             },
                                             onTimestampClicked = { seconds ->
                                                 Toast.makeText(context, "Seeking to ${seconds}s", Toast.LENGTH_SHORT).show()
-                                                youtubeHostState.seekTo(seconds)
                                                 simWebView?.evaluateJavascript(
                                                     "if (window.seekTo) { window.seekTo($seconds); }",
                                                     null
@@ -676,18 +679,4 @@ fun WorkspaceScreen(
             onCancel = { unsavedGuard.cancel() }
         )
     }
-}
-
-private fun extractYouTubeId(raw: String): String {
-    val trimmed = raw.trim()
-    val candidate = if (trimmed.startsWith("{") && trimmed.contains("\"url\"")) {
-        try {
-            val obj = com.google.gson.JsonParser.parseString(trimmed).asJsonObject
-            obj.get("url")?.asString ?: trimmed
-        } catch (_: Exception) { trimmed }
-    } else trimmed
-
-    val pattern = Regex("(?:youtube\\.com\\/(?:[^/]+\\/.+\\/|(?:v|e(?:mbed)?|shorts|live)\\/|.*[?&]v=)|youtu\\.be\\/)([^\"&?/\\s]{11})")
-    val match = pattern.find(candidate)
-    return match?.groupValues?.get(1) ?: candidate.takeIf { it.length == 11 } ?: candidate
 }

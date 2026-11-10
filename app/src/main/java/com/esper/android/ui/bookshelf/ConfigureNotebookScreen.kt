@@ -87,8 +87,6 @@ fun ConfigureNotebookScreen(
     var tags by remember { mutableStateOf(notebook.tagsCsv) }
     var coverPreset by remember { mutableStateOf(notebook.coverPreset) }
     var coverImageInput by remember { mutableStateOf(notebook.coverImage ?: "") }
-    var visibility by remember { mutableStateOf(notebook.visibility) }
-    var passwordInput by remember { mutableStateOf("") }
     var isBookmarked by remember { mutableStateOf(notebook.isPinned) }
     var isCopiedPrompt by remember { mutableStateOf(false) }
 
@@ -132,8 +130,8 @@ fun ConfigureNotebookScreen(
                                     tags.trim(),
                                     coverPreset,
                                     sanitizedCover,
-                                    visibility,
-                                    passwordInput.trim().ifEmpty { null },
+                                    "public",
+                                    null,
                                     isBookmarked
                                 )
                                 onNavigateBack()
@@ -335,10 +333,10 @@ fun ConfigureNotebookScreen(
                 }
             }
 
-            // Access Control
-            Text("Access Control & Bookmark", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            // Local vault options
+            Text("Bookmark", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
 
-             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = isBookmarked,
                     onClick = { isBookmarked = !isBookmarked },
@@ -351,33 +349,6 @@ fun ConfigureNotebookScreen(
                             modifier = Modifier.size(15.dp)
                         )
                     }
-                )
-                FilterChip(
-                    selected = visibility == "public",
-                    onClick = { visibility = "public" },
-                    label = { Text("Public") },
-                    leadingIcon = { Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                )
-                FilterChip(
-                    selected = visibility == "protected",
-                    onClick = { visibility = "protected" },
-                    label = { Text("Protected") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                )
-                FilterChip(
-                    selected = visibility == "restricted",
-                    onClick = { visibility = "restricted" },
-                    label = { Text("Restricted") }
-                )
-            }
-
-            if (visibility == "protected") {
-                OutlinedTextField(
-                    value = passwordInput,
-                    onValueChange = { passwordInput = it },
-                    label = { Text("Set Visitor Password (leave blank to keep current)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
@@ -464,8 +435,8 @@ fun ConfigureNotebookScreen(
                             tags.trim(),
                             coverPreset,
                             sanitizedCover,
-                            visibility,
-                            passwordInput.trim().ifEmpty { null },
+                            "public",
+                            null,
                             isBookmarked
                         )
                         onNavigateBack()

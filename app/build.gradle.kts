@@ -3,7 +3,6 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
-    id("com.google.gms.google-services")
 }
 
 // Export the Room schema so the database contract (notably the composite
@@ -21,7 +20,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "3.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -84,6 +83,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.documentfile)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
@@ -96,23 +96,12 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.coil.svg)
-    implementation(libs.retrofit.core)
-    implementation(libs.retrofit.gson)
     implementation(libs.google.gson)
-    implementation(libs.okhttp.logging)
 
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.okhttp)
-
-    // Firebase BoM and Auth
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.auth)
-    implementation(libs.firebase.analytics)
-    implementation(libs.play.services.auth)
-    implementation(libs.youtube.player)
 
     testImplementation(libs.junit4)
 }

@@ -141,11 +141,6 @@ fun AttachmentsBottomSheet(
                             label = { Text("HTML/JS Sim") }
                         )
                         FilterChip(
-                            selected = kind == "youtube",
-                            onClick = { kind = "youtube" },
-                            label = { Text("YouTube Video") }
-                        )
-                        FilterChip(
                             selected = kind == "excalidraw",
                             onClick = {
                                 kind = "excalidraw"
@@ -155,25 +150,19 @@ fun AttachmentsBottomSheet(
                         )
                     }
 
-                    if (kind != "youtube") {
-                        OutlinedTextField(
-                            value = title,
-                            onValueChange = { title = it },
-                            label = { Text("Visual Title") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Visual Title") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
                     OutlinedTextField(
                         value = payload,
                         onValueChange = { payload = it },
-                        label = { Text(if (kind == "youtube") "YouTube Video URL (paste URL)" else if (kind == "excalidraw") "Drawing JSON (elements)" else "HTML / JS Simulation Code") },
+                        label = { Text(if (kind == "excalidraw") "Drawing JSON (elements)" else "HTML / JS Simulation Code") },
                         placeholder = {
-                            if (kind == "youtube") {
-                                Text("https://www.youtube.com/watch?v=...")
-                            } else {
-                                Text("<!DOCTYPE html>...")
-                            }
+                            Text("<!DOCTYPE html>...")
                         },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -183,12 +172,11 @@ fun AttachmentsBottomSheet(
                 Button(
                     onClick = {
                         val finalTitle = when (kind) {
-                            "youtube" -> "YouTube Video"
                             "excalidraw" -> title.trim().ifBlank { "Whiteboard Canvas" }
                             else -> title.trim()
                         }
                         val finalPayload = if (kind == "excalidraw" && payload.isBlank()) "{\"elements\":[]}" else payload.trim()
-                        if (finalPayload.isNotBlank() && (kind == "youtube" || kind == "excalidraw" || finalTitle.isNotBlank())) {
+                        if (finalPayload.isNotBlank() && (kind == "excalidraw" || finalTitle.isNotBlank())) {
                             onAddAttachment(finalTitle, kind, finalPayload)
                             title = ""
                             payload = ""

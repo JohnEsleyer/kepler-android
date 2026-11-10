@@ -24,8 +24,8 @@ class PageIdentityTest {
 
     private fun schemaFile(): File {
         val candidates = listOf(
-            File("schemas/com.esper.android.data.local.EsperDatabase/5.json"),
-            File("app/schemas/com.esper.android.data.local.EsperDatabase/5.json")
+            File("schemas/com.esper.android.data.local.EsperDatabase/7.json"),
+            File("app/schemas/com.esper.android.data.local.EsperDatabase/7.json")
         )
         return candidates.firstOrNull { it.exists() }
             ?: error("Room schema not found. Looked in: " + candidates.joinToString { it.path })
@@ -79,7 +79,7 @@ class PageIdentityTest {
     fun `the exported schema is the one the database runs`() {
         val root = JsonParser.parseString(schemaFile().readText()).asJsonObject
         val version = root.getAsJsonObject("database").get("version").asInt
-        assertEquals(5, version)
+        assertEquals(7, version)
         assertNotNull(root.getAsJsonObject("database").get("identityHash"))
     }
 }
