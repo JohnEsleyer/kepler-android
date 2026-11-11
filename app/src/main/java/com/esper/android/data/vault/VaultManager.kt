@@ -161,6 +161,56 @@ class VaultManager(
         val isDirectory: Boolean = false
     )
 
+    /**
+     * Normalizes a workspace folder URI into a stable identity key so that the
+     * same folder picked twice (even via a slightly different SAF URI) maps to
+     * a single workspace. Falls back to the resolved display path.
+     */
+    private fun treeKey(treeUriString: String?): String? {
+        if (treeUriString.isNullOrBlank()) return null
+        val uri = try { Uri.parse(treeUriString) } catch (_: Exception) { return null }
+        val key = try {
+            if (DocumentsContract.isTreeUri(uri)) {
+                DocumentsContract.getTreeDocumentId(uri)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+        return (key ?: WorkspacePathHelper.getDisplayPath(uri)).lowercase(Locale.ROOT)
+    }
+
+    /**
+     * Merges duplicate workspaces that point to the same folder, keeping the
+     * most recently accessed entry and deleting the rest.
+     */
+    private suspend fun dedupeWorkspaces() {
+        val all = db.dao().getAllWorkspaces().filter { !it.treeUriString.isNullOrBlank() }
+        val keptByKey = mutableMapOf<String, String>()
+        val keptIdForDeleted = mutableMapOf<String, String>()
+        val deleteIds = mutableListOf<String>()
+
+        for (ws in all.sortedByDescending { it.lastAccessedAt }) {
+            val key = treeKey(ws.treeUriString) ?: continue
+            val kept = keptByKey[key]
+            if (kept == null) {
+                keptByKey[key] = ws.id
+            } else {
+                deleteIds.add(ws.id)
+                keptIdForDeleted[ws.id] = kept
+            }
+        }
+
+        if (deleteIds.isNotEmpty()) {
+            deleteIds.forEach { db.dao().deleteWorkspace(it) }
+            val activeId = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, null)
+            if (activeId != null && activeId in deleteIds) {
+                prefs.edit().putString(KEY_ACTIVE_WORKSPACE_ID, keptIdForDeleted[activeId]).apply()
+            }
+        }
+    }
+
     suspend fun getActiveWorkspace(): WorkspaceEntity? = withContext(Dispatchers.IO) {
         // Clean up legacy placeholder workspace without a folder uri
         db.dao().getWorkspaceById("default_local_workspace")?.let { legacy ->
@@ -168,6 +218,9 @@ class VaultManager(
                 db.dao().deleteWorkspace(legacy.id)
             }
         }
+
+        // Merge any workspaces that reference the same folder
+        dedupeWorkspaces()
 
         val id = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, null)
         var ws = if (!id.isNullOrBlank()) db.dao().getWorkspaceById(id) else null
@@ -198,6 +251,23 @@ class VaultManager(
     }
 
     suspend fun addWorkspace(name: String, treeUri: Uri): WorkspaceEntity = withContext(Dispatchers.IO) {
+        val newKey = treeKey(treeUri.toString())
+
+        // Reuse an existing workspace if this folder was already opened before
+        if (newKey != null) {
+            val existing = db.dao().getAllWorkspaces().firstOrNull { treeKey(it.treeUriString) == newKey }
+            if (existing != null) {
+                val refreshed = existing.copy(
+                    name = name.ifBlank { existing.name },
+                    treeUriString = treeUri.toString(),
+                    lastAccessedAt = System.currentTimeMillis()
+                )
+                db.dao().upsertWorkspace(refreshed)
+                setActiveWorkspace(refreshed.id)
+                return@withContext refreshed
+            }
+        }
+
         val newId = "ws-" + UUID.randomUUID().toString().take(8)
         val entity = WorkspaceEntity(
             id = newId,
