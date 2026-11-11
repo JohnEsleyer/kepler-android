@@ -1,11 +1,16 @@
 package com.esper.android.data.vault
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.documentfile.provider.DocumentFile
 import com.esper.android.data.export.ImportedBook
 import com.esper.android.data.local.EsperDatabase
@@ -29,7 +34,110 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
+ * Helpers for resolving human-readable filesystem paths and opening folders in file explorers.
+ */
+object WorkspacePathHelper {
+
+    fun getDisplayPath(treeUriString: String?): String {
+        if (treeUriString.isNullOrBlank()) return ""
+        val uri = try { Uri.parse(treeUriString) } catch (_: Exception) { return treeUriString }
+        return getDisplayPath(uri)
+    }
+
+    fun getDisplayPath(uri: Uri): String {
+        if (uri.scheme == "file") {
+            return uri.path ?: uri.toString()
+        }
+        val docId = try {
+            if (DocumentsContract.isTreeUri(uri)) {
+                DocumentsContract.getTreeDocumentId(uri)
+            } else {
+                DocumentsContract.getDocumentId(uri)
+            }
+        } catch (_: Exception) {
+            uri.lastPathSegment ?: uri.toString()
+        }
+
+        return when {
+            docId.startsWith("primary:", ignoreCase = true) -> {
+                val sub = docId.substringAfter("primary:").trimStart('/')
+                "/storage/emulated/0" + (if (sub.isNotEmpty()) "/$sub" else "")
+            }
+            docId.startsWith("raw:", ignoreCase = true) -> {
+                docId.substringAfter("raw:")
+            }
+            docId.contains(":") -> {
+                val parts = docId.split(":", limit = 2)
+                val volume = parts[0]
+                val sub = parts.getOrNull(1)?.trimStart('/') ?: ""
+                "/storage/$volume" + (if (sub.isNotEmpty()) "/$sub" else "")
+            }
+            else -> docId.ifEmpty { uri.path ?: uri.toString() }
+        }
+    }
+
+    fun openFolderInFileManager(context: Context, treeUriString: String?) {
+        if (treeUriString.isNullOrBlank()) {
+            Toast.makeText(context, "No folder selected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val treeUri = try { Uri.parse(treeUriString) } catch (_: Exception) {
+            Toast.makeText(context, "Invalid folder URI", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        var launched = false
+        // 1. Try DocumentsContract folder URI with Document.MIME_TYPE_DIR
+        try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            launched = true
+        } catch (_: Exception) {}
+
+        if (!launched) {
+            // 2. Try generic folder view intent
+            try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(treeUri, "resource/folder")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                launched = true
+            } catch (_: Exception) {}
+        }
+
+        if (!launched) {
+            // 3. Fallback: ACTION_VIEW on treeUri
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, treeUri).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                launched = true
+            } catch (_: Exception) {}
+        }
+
+        if (!launched) {
+            Toast.makeText(context, "No file manager app found to open this folder directly", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun copyPathToClipboard(context: Context, path: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("Workspace Path", path)
+        clipboard.setPrimaryClip(clip)
+        Toast.makeText(context, "Path copied to clipboard", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/**
  * VaultManager owns Kepler workspace filesystem operations conforming to Kepler Data & Storage Spec.
+ * Pure folder-backed with NO default workspace created automatically.
  */
 class VaultManager(
     private val context: Context,
@@ -44,8 +152,6 @@ class VaultManager(
         const val BOOK_META_FILE = "book.json"
         const val QUESTIONS_FILE = "questions.json"
         const val VISUALS_DIR = "visuals"
-        const val DEFAULT_WORKSPACE_NAME = "Primary Workspace"
-        const val DEFAULT_WORKSPACE_ID = "default_local_workspace"
     }
 
     private data class Node(
@@ -55,42 +161,48 @@ class VaultManager(
         val isDirectory: Boolean = false
     )
 
-    fun getDefaultWorkspaceDir(): File {
-        val base = context.getExternalFilesDir(null) ?: context.filesDir
-        val workspaceDir = File(base, "KeplerWorkspace")
-        if (!workspaceDir.exists()) workspaceDir.mkdirs()
-        return workspaceDir
-    }
+    suspend fun getActiveWorkspace(): WorkspaceEntity? = withContext(Dispatchers.IO) {
+        // Clean up legacy placeholder workspace without a folder uri
+        db.dao().getWorkspaceById("default_local_workspace")?.let { legacy ->
+            if (legacy.treeUriString == null) {
+                db.dao().deleteWorkspace(legacy.id)
+            }
+        }
 
-    suspend fun getActiveWorkspace(): WorkspaceEntity = withContext(Dispatchers.IO) {
-        val id = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, DEFAULT_WORKSPACE_ID) ?: DEFAULT_WORKSPACE_ID
-        var ws = db.dao().getWorkspaceById(id)
+        val id = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, null)
+        var ws = if (!id.isNullOrBlank()) db.dao().getWorkspaceById(id) else null
+        if (ws != null && ws.treeUriString == null) {
+            ws = null
+        }
         if (ws == null) {
-            ws = WorkspaceEntity(
-                id = DEFAULT_WORKSPACE_ID,
-                name = DEFAULT_WORKSPACE_NAME,
-                treeUriString = null,
-                isDefault = true,
-                lastAccessedAt = System.currentTimeMillis()
-            )
-            db.dao().upsertWorkspace(ws)
+            val all = db.dao().getAllWorkspaces().filter { !it.treeUriString.isNullOrBlank() }
+            ws = all.firstOrNull()
+            if (ws != null) {
+                prefs.edit().putString(KEY_ACTIVE_WORKSPACE_ID, ws.id).apply()
+            } else {
+                prefs.edit().remove(KEY_ACTIVE_WORKSPACE_ID).apply()
+            }
         }
         ws
     }
 
-    suspend fun setActiveWorkspace(workspaceId: String) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(KEY_ACTIVE_WORKSPACE_ID, workspaceId).apply()
-        db.dao().getWorkspaceById(workspaceId)?.let {
-            db.dao().upsertWorkspace(it.copy(lastAccessedAt = System.currentTimeMillis()))
+    suspend fun setActiveWorkspace(workspaceId: String?) = withContext(Dispatchers.IO) {
+        if (workspaceId == null) {
+            prefs.edit().remove(KEY_ACTIVE_WORKSPACE_ID).apply()
+        } else {
+            prefs.edit().putString(KEY_ACTIVE_WORKSPACE_ID, workspaceId).apply()
+            db.dao().getWorkspaceById(workspaceId)?.let {
+                db.dao().upsertWorkspace(it.copy(lastAccessedAt = System.currentTimeMillis()))
+            }
         }
     }
 
-    suspend fun addWorkspace(name: String, treeUri: Uri?): WorkspaceEntity = withContext(Dispatchers.IO) {
+    suspend fun addWorkspace(name: String, treeUri: Uri): WorkspaceEntity = withContext(Dispatchers.IO) {
         val newId = "ws-" + UUID.randomUUID().toString().take(8)
         val entity = WorkspaceEntity(
             id = newId,
             name = name.ifBlank { "Workspace" },
-            treeUriString = treeUri?.toString(),
+            treeUriString = treeUri.toString(),
             isDefault = false,
             lastAccessedAt = System.currentTimeMillis()
         )
@@ -100,16 +212,16 @@ class VaultManager(
     }
 
     suspend fun removeWorkspace(workspaceId: String) = withContext(Dispatchers.IO) {
-        if (workspaceId == DEFAULT_WORKSPACE_ID) return@withContext
         db.dao().deleteWorkspace(workspaceId)
-        val active = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, DEFAULT_WORKSPACE_ID)
+        val active = prefs.getString(KEY_ACTIVE_WORKSPACE_ID, null)
         if (active == workspaceId) {
-            setActiveWorkspace(DEFAULT_WORKSPACE_ID)
+            val remaining = db.dao().getAllWorkspaces().filter { !it.treeUriString.isNullOrBlank() }
+            setActiveWorkspace(remaining.firstOrNull()?.id)
         }
     }
 
     private suspend fun activeRoot(): Node? = withContext(Dispatchers.IO) {
-        val ws = getActiveWorkspace()
+        val ws = getActiveWorkspace() ?: return@withContext null
         if (ws.treeUriString != null) {
             try {
                 val doc = DocumentFile.fromTreeUri(context, Uri.parse(ws.treeUriString))
@@ -118,8 +230,7 @@ class VaultManager(
                 }
             } catch (_: Exception) {}
         }
-        val dir = getDefaultWorkspaceDir()
-        Node(dir.name, file = dir, isDirectory = true)
+        null
     }
 
     // ---------------------------------------------------------- node helpers
@@ -201,98 +312,9 @@ class VaultManager(
 
     // --------------------------------------------------------------- scanning
 
-    suspend fun seedDefaultWorkspaceIfEmpty() = withContext(Dispatchers.IO) {
-        val ws = getActiveWorkspace()
-        if (ws.treeUriString != null) return@withContext
-        mutex.withLock {
-            val root = activeRoot() ?: return@withLock
-            val existingBooks = listChildren(root).filter { it.isDirectory && !it.name.startsWith(".") }
-            if (existingBooks.isEmpty()) {
-                seedBook(
-                    root = root,
-                    folderName = "Astrodynamics & Keplerian Orbits",
-                    title = "Astrodynamics & Keplerian Orbits",
-                    description = "Interactive celestial mechanics, vis-viva equations, and orbital transfers.",
-                    preset = "solar",
-                    tags = "Physics,Astrodynamics,Space",
-                    chapters = listOf(
-                        "Keplerian Motion" to "# Keplerian Motion\n\nPlanetary motion obeys Kepler's three laws:\n\n1. The orbit of a planet is an ellipse with the Sun at one of the two foci.\n2. A line segment joining a planet and the Sun sweeps out equal areas during equal intervals of time.\n3. The square of the orbital period is proportional to the cube of the semi-major axis.\n\n${'$'}${'$'}\\frac{T^2}{a^3} = \\frac{4\\pi^2}{G(M + m)}${'$'}${'$'}\n\nNotice how the areal velocity remains constant: ${'$'}${'$'}\\frac{dA}{dt} = \\frac{1}{2} r^2 \\dot{\\theta} = \\text{const}${'$'}${'$'}.\n",
-                        "Vis-Viva Energy" to "# The Vis-Viva Equation\n\nFor any Keplerian orbit, the velocity at distance ${'$'}r${'$'} from the central body is determined by the Vis-Viva relation:\n\n${'$'}${'$'}v^2 = \\mu \\left( \\frac{2}{r} - \\frac{1}{a} \\right)${'$'}${'$'}\n\nWhere:\n- ${'$'}v${'$'} is orbital speed\n- ${'$'}\\mu = GM${'$'} is gravitational parameter\n- ${'$'}r${'$'} is orbital radius\n- ${'$'}a${'$'} is semi-major axis\n"
-                    ),
-                    questions = listOf(
-                        "What is Kepler's First Law?" to "The orbit of a planet is an ellipse with the Sun at one of the two foci."
-                    )
-                )
-
-                seedBook(
-                    root = root,
-                    folderName = "Quantum Information",
-                    title = "Quantum Information & Qubits",
-                    description = "Quantum computing fundamentals, Bloch spheres, and state evolution.",
-                    preset = "quantum",
-                    tags = "Quantum,Computing,Physics",
-                    chapters = listOf(
-                        "Qubit Representation" to "# The Quantum Bit (Qubit)\n\nUnlike a classical bit which is either ${'$'}0${'$'} or ${'$'}1${'$'}, a qubit exists in a linear superposition state:\n\n${'$'}${'$'}|\\psi\\rangle = \\alpha |0\\rangle + \\beta |1\\rangle${'$'}${'$'}\n\nWhere ${'$'}|\\alpha|^2 + |\\beta|^2 = 1${'$'}.\n"
-                    ),
-                    questions = listOf(
-                        "What is the normalization condition?" to "${'$'}${'$'}|\\alpha|^2 + |\\beta|^2 = 1${'$'}${'$'} ensures total probability equals 1."
-                    )
-                )
-            }
-        }
-        syncWorkspaceToLocalDatabase()
-    }
-
-    private fun seedBook(
-        root: Node,
-        folderName: String,
-        title: String,
-        description: String,
-        preset: String,
-        tags: String,
-        chapters: List<Pair<String, String>>,
-        questions: List<Pair<String, String>>
-    ) {
-        val dir = createDirectory(root, folderName) ?: return
-        val now = System.currentTimeMillis()
-        val meta = linkedMapOf<String, Any?>(
-            "id" to "book-" + UUID.randomUUID().toString().take(8),
-            "title" to title,
-            "description" to description,
-            "coverPreset" to preset,
-            "tags" to tags.split(",").map { it.trim() },
-            "isPinned" to false,
-            "showTitleOnCover" to true,
-            "createdAt" to now,
-            "updatedAt" to now
-        )
-        writeText(dir, BOOK_META_FILE, gson.toJson(meta), "application/json")
-
-        chapters.forEachIndexed { idx, (chTitle, content) ->
-            writeText(dir, chapterFileName(idx + 1, chTitle), content, "text/markdown")
-        }
-
-        if (questions.isNotEmpty()) {
-            val list = questions.mapIndexed { idx, (prompt, answer) ->
-                mapOf(
-                    "id" to "q-${System.currentTimeMillis() + idx}",
-                    "title" to prompt,
-                    "answer" to answer,
-                    "position" to idx
-                )
-            }
-            writeText(dir, QUESTIONS_FILE, gson.toJson(list), "application/json")
-        }
-
-        val visuals = createDirectory(dir, VISUALS_DIR)
-        if (visuals != null) {
-            writeText(visuals, "01_keplerian_orbit.html", DEFAULT_SIM_HTML, "text/html")
-        }
-    }
-
     suspend fun syncWorkspaceToLocalDatabase() = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val ws = getActiveWorkspace()
+            val ws = getActiveWorkspace() ?: return@withLock
             val root = activeRoot() ?: return@withLock
             val books = listChildren(root)
                 .filter { it.isDirectory && !it.name.startsWith(".") }
@@ -498,7 +520,7 @@ class VaultManager(
         coverImage: String?
     ): NotebookEntity? = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val ws = getActiveWorkspace()
+            val ws = getActiveWorkspace() ?: return@withLock null
             val root = activeRoot() ?: return@withLock null
             val folderName = uniqueBookFolderName(root, title)
             val book = createDirectory(root, folderName) ?: return@withLock null
@@ -675,7 +697,7 @@ class VaultManager(
 
     suspend fun importBook(imported: ImportedBook) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val ws = getActiveWorkspace()
+            val ws = getActiveWorkspace() ?: return@withLock
             val root = activeRoot() ?: return@withLock
             val folderName = uniqueBookFolderName(root, imported.title)
             val book = createDirectory(root, folderName) ?: return@withLock
@@ -730,6 +752,9 @@ class VaultManager(
     }
 
     fun exportToDownloads(): String {
+        val root = kotlinx.coroutines.runBlocking { activeRoot() }
+            ?: throw IllegalStateException("No active workspace folder selected")
+
         val fileName = "kepler-workspace-${System.currentTimeMillis() / 1000}.zip"
         val outputStream: OutputStream = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = context.contentResolver
@@ -749,7 +774,6 @@ class VaultManager(
         }
 
         ZipOutputStream(outputStream).use { zip ->
-            val root = kotlinx.coroutines.runBlocking { activeRoot() } ?: throw IllegalStateException("Workspace not accessible")
             writeZipNode(root, zip, "")
         }
         return fileName
@@ -875,51 +899,3 @@ class VaultManager(
         return 0
     }
 }
-
-private const val DEFAULT_SIM_HTML = """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <style>
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #020617; overflow: hidden; font-family: sans-serif; }
-    canvas { display: block; width: 100vw; height: 100vh; }
-    .hud { position: fixed; top: 10px; left: 10px; color: #818cf8; font-size: 11px; font-family: monospace; background: rgba(15, 23, 42, 0.85); padding: 5px 10px; border-radius: 8px; border: 1px solid rgba(129, 140, 248, 0.35); }
-  </style>
-</head>
-<body>
-  <div class="hud">● Kepler Orbit Simulation</div>
-  <canvas id="c"></canvas>
-  <script>
-    const c = document.getElementById('c');
-    const ctx = c.getContext('2d');
-    function resize() { c.width = window.innerWidth; c.height = window.innerHeight; }
-    window.addEventListener('resize', resize);
-    resize();
-    let t = 0;
-    function frame() {
-      ctx.fillStyle = '#020617';
-      ctx.fillRect(0, 0, c.width, c.height);
-      const cx = c.width / 2, cy = c.height / 2;
-      const a = Math.min(cx, cy) * 0.7, b = a * 0.6;
-      ctx.strokeStyle = 'rgba(129, 140, 248, 0.35)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, a, b, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = '#fbbf24';
-      ctx.beginPath();
-      ctx.arc(cx - Math.sqrt(Math.max(0, a*a - b*b)), cy, 8, 0, Math.PI * 2);
-      ctx.fill();
-      t += 0.02;
-      ctx.fillStyle = '#818cf8';
-      ctx.beginPath();
-      ctx.arc(cx + a * Math.cos(t), cy + b * Math.sin(t), 5, 0, Math.PI * 2);
-      ctx.fill();
-      requestAnimationFrame(frame);
-    }
-    frame();
-  </script>
-</body>
-</html>"""

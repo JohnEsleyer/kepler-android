@@ -19,6 +19,9 @@ interface EsperDao {
     @Query("SELECT * FROM workspaces ORDER BY lastAccessedAt DESC")
     fun observeAllWorkspaces(): Flow<List<WorkspaceEntity>>
 
+    @Query("SELECT * FROM workspaces ORDER BY lastAccessedAt DESC")
+    suspend fun getAllWorkspaces(): List<WorkspaceEntity>
+
     @Query("SELECT * FROM workspaces WHERE id = :workspaceId")
     suspend fun getWorkspaceById(workspaceId: String): WorkspaceEntity?
 

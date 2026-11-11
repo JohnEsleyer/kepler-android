@@ -45,7 +45,6 @@ enum class ActiveScreen {
 
 class MainActivity : ComponentActivity() {
 
-
     private val db by lazy {
         Room.databaseBuilder(applicationContext, EsperDatabase::class.java, "kepler_offline.db")
             .fallbackToDestructiveMigration()
@@ -81,16 +80,7 @@ class MainActivity : ComponentActivity() {
                 var isTabsSheetOpen by remember { mutableStateOf(false) }
 
                 val workspaces by db.dao().observeAllWorkspaces().collectAsState(initial = emptyList())
-                var activeWorkspace by remember {
-                    mutableStateOf(
-                        WorkspaceEntity(
-                            id = VaultManager.DEFAULT_WORKSPACE_ID,
-                            name = VaultManager.DEFAULT_WORKSPACE_NAME,
-                            treeUriString = null,
-                            isDefault = true
-                        )
-                    )
-                }
+                var activeWorkspace by remember { mutableStateOf<WorkspaceEntity?>(null) }
 
                 // Local-only bookmarks
                 var bookmarkIds by remember {
@@ -109,14 +99,17 @@ class MainActivity : ComponentActivity() {
                     bookmarkPrefs.edit().remove("bookmarked_ids").apply()
                 }
 
-                val notebooks by db.dao().observeNotebooksForWorkspace(activeWorkspace.id).collectAsState(initial = emptyList())
-                val allDetails by db.dao().observeNotebooksWithDetailsForWorkspace(activeWorkspace.id).collectAsState(initial = emptyList())
+                val activeWsId = activeWorkspace?.id ?: ""
+                val notebooks by db.dao().observeNotebooksForWorkspace(activeWsId).collectAsState(initial = emptyList())
+                val allDetails by db.dao().observeNotebooksWithDetailsForWorkspace(activeWsId).collectAsState(initial = emptyList())
 
                 suspend fun rescanCurrentWorkspace() {
                     withContext(Dispatchers.IO) {
-                        activeWorkspace = vaultManager.getActiveWorkspace()
-                        vaultManager.seedDefaultWorkspaceIfEmpty()
-                        vaultManager.syncWorkspaceToLocalDatabase()
+                        val currentWs = vaultManager.getActiveWorkspace()
+                        activeWorkspace = currentWs
+                        if (currentWs != null) {
+                            vaultManager.syncWorkspaceToLocalDatabase()
+                        }
                     }
                 }
 
@@ -319,14 +312,19 @@ class MainActivity : ComponentActivity() {
                     }
 
                     ActiveScreen.SETTINGS -> {
+                        val currentWs = activeWorkspace
                         SettingsScreen(
-                            workspaceName = activeWorkspace.name,
-                            workspaceLocation = activeWorkspace.treeUriString ?: vaultManager.getDefaultWorkspaceDir().absolutePath,
+                            workspaceName = currentWs?.name ?: "No Workspace Open",
+                            workspaceLocation = currentWs?.treeUriString ?: "",
                             notebookCount = notebooks.size,
                             onRescanWorkspace = {
                                 coroutineScope.launch {
-                                    rescanCurrentWorkspace()
-                                    Toast.makeText(applicationContext, "Workspace indexed", Toast.LENGTH_SHORT).show()
+                                    if (activeWorkspace != null) {
+                                        rescanCurrentWorkspace()
+                                        Toast.makeText(applicationContext, "Workspace indexed", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(applicationContext, "No workspace folder open", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             },
                             onSelectWorkspaceFolder = { uri ->
@@ -334,6 +332,10 @@ class MainActivity : ComponentActivity() {
                             },
                             onExportZip = {
                                 coroutineScope.launch {
+                                    if (activeWorkspace == null) {
+                                        Toast.makeText(applicationContext, "Please open a workspace folder first", Toast.LENGTH_SHORT).show()
+                                        return@launch
+                                    }
                                     try {
                                         val fileName = withContext(Dispatchers.IO) {
                                             vaultManager.exportToDownloads()
@@ -346,9 +348,13 @@ class MainActivity : ComponentActivity() {
                             },
                             onImportPackage = { uri ->
                                 coroutineScope.launch {
+                                    if (activeWorkspace == null) {
+                                        Toast.makeText(applicationContext, "Please open a workspace folder first", Toast.LENGTH_SHORT).show()
+                                        return@launch
+                                    }
                                     try {
                                         val imported = withContext(Dispatchers.IO) {
-                                            ZipImporter.importPackage(applicationContext, uri, db, activeWorkspace.id)
+                                            ZipImporter.importPackage(applicationContext, uri, db, activeWorkspace!!.id)
                                         }
                                         vaultManager.importBook(imported)
                                         Toast.makeText(applicationContext, "Imported: ${imported.title}", Toast.LENGTH_SHORT).show()
@@ -370,7 +376,7 @@ class MainActivity : ComponentActivity() {
                                     if (newBook != null) {
                                         openBookDirect(newBook.id)
                                     } else {
-                                        Toast.makeText(applicationContext, "Could not create notebook", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(applicationContext, "Could not create notebook. Make sure a workspace folder is open.", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             },
@@ -593,7 +599,14 @@ class MainActivity : ComponentActivity() {
                             onOpenAllTagsScreen = { navigateTo(ActiveScreen.ALL_TAGS) },
                             onOpenTabsScreen = { isTabsSheetOpen = true },
                             onOpenSettingsScreen = { navigateTo(ActiveScreen.SETTINGS) },
-                            onOpenCreateNotebookScreen = { navigateTo(ActiveScreen.CREATE_NOTEBOOK) }
+                            onOpenCreateNotebookScreen = {
+                                if (activeWorkspace == null) {
+                                    Toast.makeText(applicationContext, "Please open a workspace folder first", Toast.LENGTH_SHORT).show()
+                                    folderPickerLauncher.launch(null)
+                                } else {
+                                    navigateTo(ActiveScreen.CREATE_NOTEBOOK)
+                                }
+                            }
                         )
                     }
                 }

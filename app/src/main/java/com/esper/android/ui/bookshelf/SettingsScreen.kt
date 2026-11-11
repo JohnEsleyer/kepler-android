@@ -19,9 +19,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.esper.android.data.vault.WorkspacePathHelper
 import com.esper.android.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,6 +39,7 @@ fun SettingsScreen(
     onImportPackage: (Uri) -> Unit,
     onNavigateBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val importPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -46,6 +50,10 @@ fun SettingsScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) onSelectWorkspaceFolder(uri)
+    }
+
+    val displayPath = remember(workspaceLocation) {
+        WorkspacePathHelper.getDisplayPath(workspaceLocation)
     }
 
     Scaffold(
@@ -100,8 +108,8 @@ fun SettingsScreen(
                                 fontSize = 16.sp
                             )
                             Text(
-                                text = "Kepler Offline Workspace",
-                                color = EmeraldSync,
+                                text = if (displayPath.isNotEmpty()) "Kepler Folder Workspace" else "No Workspace Open",
+                                color = if (displayPath.isNotEmpty()) EmeraldSync else TextMuted,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -111,14 +119,74 @@ fun SettingsScreen(
                     HorizontalDivider(color = BorderSlate.copy(alpha = 0.5f), thickness = 1.dp)
 
                     Text("• Stored books: $notebookCount", color = TextSecondary, fontSize = 12.sp)
+
+                    if (displayPath.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Folder Path on Device:",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = SurfaceSlate,
+                                border = BorderStroke(1.dp, BorderSlate),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = displayPath,
+                                        color = TextPrimary,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        lineHeight = 15.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            WorkspacePathHelper.copyPathToClipboard(context, displayPath)
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "Copy Path",
+                                            tint = IndigoGlow,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            WorkspacePathHelper.openFolderInFileManager(context, workspaceLocation)
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Launch,
+                                            contentDescription = "Open in File Manager",
+                                            tint = EmeraldSync,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "No workspace folder selected yet. Tap below to choose a folder.",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+
                     Text(
-                        workspaceLocation,
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        lineHeight = 14.sp
-                    )
-                    Text(
-                        "• Books are local directories containing Markdown chapters, book.json metadata, and visuals/ companions.",
+                        text = "• Books are local directories containing Markdown chapters (*.md), book.json metadata, and visuals/ companions.",
                         color = IndigoGlow,
                         fontSize = 11.sp,
                         lineHeight = 16.sp
@@ -134,15 +202,17 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Workspace Storage", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-                    Button(
-                        onClick = onRescanWorkspace,
-                        colors = ButtonDefaults.buttonColors(containerColor = IndigoAccent),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Re-scan workspace & index")
+                    if (displayPath.isNotEmpty()) {
+                        Button(
+                            onClick = onRescanWorkspace,
+                            colors = ButtonDefaults.buttonColors(containerColor = IndigoAccent),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Re-scan workspace & index")
+                        }
                     }
 
                     OutlinedButton(
@@ -151,9 +221,9 @@ fun SettingsScreen(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.FolderSpecial, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Open external folder as workspace")
+                        Text(if (displayPath.isNotEmpty()) "Change workspace folder" else "Open workspace folder")
                     }
                 }
             }
@@ -168,6 +238,7 @@ fun SettingsScreen(
 
                     Button(
                         onClick = onExportZip,
+                        enabled = displayPath.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = EmeraldSync),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -179,6 +250,7 @@ fun SettingsScreen(
 
                     OutlinedButton(
                         onClick = { importPicker.launch("*/*") },
+                        enabled = displayPath.isNotEmpty(),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldSync),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
