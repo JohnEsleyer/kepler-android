@@ -1,327 +1,147 @@
-# Esper Android - Headless CLI Build & Run Guide (Linux)
 
-Esper is a **pure offline, folder-backed workspace for books and interactive
-notes**. There is no account system, cloud sync, or network requirement. Books
-are ordinary folders containing Markdown chapters, JSON metadata, and HTML
-visuals; the same vault can be opened in Obsidian, VS Code, Git, or Pandoc.
+# Kepler 🪐
 
-- Architecture overview: [`docs/esper-main/overview.md`](docs/esper-main/overview.md)
-- Vault format and interoperability: [`docs/vault-spec.md`](docs/vault-spec.md)
-
-The rest of this guide walks you through installing prerequisites, building,
-and running the `esper-android` project on Linux completely from the command
-line without opening Android Studio.
+> **Interactive science and knowledge notebooks for Android.**  
+> Pair rich Markdown chapters with embedded simulations, KaTeX formulas, active recall flashcards, and open folder-backed vaults.
 
 ---
 
-## 1. Prerequisites
+## 🧭 What is Kepler?
 
-### 1.1. Java Development Kit (JDK 17)
-The project is configured for JDK 17 / JVM Target 17.
+**Kepler** is a standalone, offline-first knowledge workspace engineered for students, engineers, researchers, and technical writers. 
 
-On Ubuntu / Debian:
-```bash
-sudo apt update
-sudo apt install -y openjdk-17-jdk
-```
+Traditional note-taking apps force notes to be static text or trap your thoughts inside proprietary databases. Kepler is built on a different principle: **complex ideas are best understood through interaction**. Every notebook in Kepler pairs structured CommonMark chapters with **live HTML5/Canvas simulations**, **display math**, and **active recall prompts**—all stored directly as ordinary files and directories on your device.
 
-On Fedora / RHEL:
-```bash
-sudo dnf install -y java-17-openjdk-devel
-```
-
-Verify your Java version:
-```bash
-java -version
-```
+No account. No cloud dependency. No data lock-in.
 
 ---
 
-## 2. Install Android Command-Line Tools & SDK
+## ✨ Key Features
 
-If you don't already have the Android SDK installed:
+### 🌌 Visual Companions & Simulations
+- **Per-Chapter Simulators:** Attach self-contained HTML5, Canvas, WebGL, or SVG simulations directly to any chapter (e.g., orbital mechanics, quantum tunneling, double-slit wave propagation).
+- **Split & Fullscreen Viewports:** Toggle seamlessly between reading notes and running interactive visual models.
+- **Embedded Whiteboard & Vector Canvases:** Render lightweight structured animation and whiteboard descriptors alongside content.
 
-### 2.1. Set SDK Environment Variables
-Add these to `~/.bashrc` (or `~/.zshrc`):
+### ✍️ Intelligent Markdown & Math Editor
+- **Live Block Composition:** Headings, blockquotes, numbered and bulleted lists, task checkboxes, and auto-closing code blocks.
+- **KaTeX Formula Rendering:** First-class support for inline math (`$E = mc^2$`) and display equation blocks (`$$\dots$$`).
+- **Syntax Highlighting:** Native multi-language syntax highlighting for Python, Rust, C++, Kotlin, JavaScript, SQL, Bash, PHP, and JSON.
+- **Quick Notation:** Emoji shortcodes (`:rocket:`), inline timestamp references (`[04:20]`), raw markdown toggling, and multi-step undo/redo.
 
-```bash
-export ANDROID_HOME="$HOME/Android/Sdk"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator"
-```
+### 🧠 Built-In Active Recall
+- **Concept Verification:** Store prompt-and-answer flashcard questions alongside your chapters inside each notebook.
+- **Focused Review:** Drill key laws, formulas, and derivations without leaving your reading workspace.
 
-Reload environment:
-```bash
-source ~/.bashrc
-```
+### 📂 Open Vault Architecture (Zero Lock-In)
+- **Ordinary Files on Disk:** A Kepler notebook is simply a directory containing `.md` files, a clean `book.json` metadata file, and optional `visuals/` and `questions.json`.
+- **Interoperability:** Mount your workspace in Obsidian, VS Code, Git, Pandoc, or Syncthing. Edit on your desktop, inspect on your phone.
+- **Storage Access Framework (SAF):** Pick any storage directory or SD card tree on Android.
 
-### 2.2. Download & Extract Android Command-Line Tools
-```bash
-mkdir -p "$ANDROID_HOME/cmdline-tools"
-cd /tmp
-wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-unzip cmdline-tools.zip
-mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-mv cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
-rm -rf cmdline-tools cmdline-tools.zip
-```
-
-### 2.3. Accept Licenses & Install Required SDK Packages
-The app targets SDK `35` and minSdk `26`:
-
-```bash
-# Accept all licenses
-yes | sdkmanager --licenses
-
-# Install platforms, build-tools, platform-tools, emulator, and system image
-sdkmanager "platform-tools" \
-           "platforms;android-35" \
-           "build-tools;35.0.0" \
-           "emulator" \
-           "system-images;android-34;google_apis;x86_64"
-```
+### 🎨 Curated Bookshelf UI
+- **Preset & Custom Covers:** Choose from thematic presets (*Celestial*, *Quantum*, *Solar*, *Midnight*, *Nebula*, *Crimson*) or attach custom cover illustrations.
+- **Tag & Search Indexing:** Fast filtering by tags, full-text search across titles and summaries, and multiple sort modes.
+- **Offline & Private:** Zero network requests, zero telemetry, zero trackers.
 
 ---
 
-## 3. Initialize Gradle Wrapper in the Project
+## 📁 Vault File Structure
 
-If `gradlew` is not yet generated in `esper-android/`:
+Kepler treats any folder as a self-contained **Workspace**. Each subdirectory inside it represents a single **Book**:
 
-1. Install Gradle temporarily:
-   ```bash
-   sudo apt install -y gradle  # or use sdkman: sdk install gradle 8.11
-   ```
+```text
+<Workspace_Root>/
+├── Astrodynamics & Keplerian Orbits/
+│   ├── book.json                     # Metadata (title, tags, cover preset, timestamps)
+│   ├── cover.png                     # Optional custom cover graphic
+│   ├── 01_Keplerian_Motion.md        # Chapter 1 (Standard CommonMark + KaTeX)
+│   ├── 02_Vis_Viva_Equation.md       # Chapter 2
+│   ├── 03_Hohmann_Transfers.md       # Chapter 3
+│   ├── questions.json                # Active recall flashcards
+│   └── visuals/                      # Interactive HTML companions
+│       ├── 01_orbit_sim.html         # Mapped to Chapter 1 by prefix
+│       └── 03_transfer_sim.html      # Mapped to Chapter 3
+└── Quantum Mechanics/
+    ├── book.json
+    ├── 01_Wave_Particle_Duality.md
+    └── visuals/
+        └── 01_double_slit.html
+```
 
-2. Generate the wrapper inside `esper-android`:
-   ```bash
-   cd esper-android
-   gradle wrapper --gradle-version 8.11.1
-   chmod +x gradlew
-   ```
+### File Conventions:
+- **Chapters (`01_Name.md`)**: Numbered using natural sort order (`01`, `02`, `10`). The first `# Heading` resolves as the display chapter title.
+- **Visuals (`visuals/01_*.html`)**: Matched to chapter indices via numeric prefix. HTML executes in a sandboxed WebView (`allow-scripts allow-modals`) with no access to system files.
+- **Questions (`questions.json`)**: An array of `id`, `title` (prompt), `answer`, and `position` entries.
 
 ---
 
-## 4. Build the APK via CLI
+## 🛠️ Architecture & Tech Stack
 
-From the `esper-android` directory:
-
-### 4.1. Clean & Assemble Debug Build
-```bash
-cd esper-android
-./gradlew assembleDebug
-```
-
-The compiled APK will be output at:
-```
-esper-android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-### 4.2. Clean & Assemble Optimized Production Release Build
-```bash
-cd esper-android
-./gradlew assembleRelease
-```
-
-The optimized, R8-minified production APK will be output at:
-```
-esper-android/app/build/outputs/apk/release/app-release.apk
-```
-
-> **Signing:** the `release` build type is signed with the keystore pointed at by
-> `KEYSTORE_PATH` (or the `RELEASE_STORE_FILE` Gradle property). When no
-> production keystore is configured it falls back to the local debug keystore, so
-> `assembleRelease` always yields an APK that `adb install` can put on a device.
-> Supply real credentials for distribution:
-> ```bash
-> export KEYSTORE_PATH=/path/to/release.jks
-> export KEYSTORE_PASSWORD=…
-> export KEY_ALIAS=…
-> export KEY_PASSWORD=…
-> ./gradlew assembleRelease
-> ```
-
----
-
-## 5. Running & Deploying the App via CLI
-
-### Option A: Optimized Production Release Deployment (Recommended)
-
-1. **Build + Install + Launch Release via Wireless / USB Deploy**:
-   ```bash
-   bun run scripts/wireless-deploy.js --release
-   # or with Node.js:
-   node scripts/wireless-deploy.js --release
-   # or as a package script:
-   bun run deploy:release
-   ```
-
-2. **Skip Build (Fast Re-deploy of existing Release APK)**:
-   ```bash
-   bun run scripts/wireless-deploy.js --release --skip-build
-   # or
-   node scripts/wireless-deploy.js -r -s
-   # or as a package script:
-   bun run install:device:release
-   ```
-
-3. **Direct ADB Command (USB or Connected Wireless ADB)**:
-   ```bash
-   ./gradlew assembleRelease
-   adb install -r -d app/build/outputs/apk/release/app-release.apk
-   adb shell am start - com.johnesleyer.esper/com.esper.android.MainActivity
-   ```
-
-   For the debug build instead:
-   ```bash
-   ./gradlew assembleDebug
-   adb install -r app/build/outputs/apk/debug/app-debug.apk
-   adb shell am start - com.johnesleyer.esper/com.esper.android.MainActivity
-   ```
-
-### Option B: Debug Build Deployment
-
-```bash
-bun run scripts/wireless-deploy.js
-# or direct manual adb:
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start - com.johnesleyer.esper/com.esper.android.MainActivity
-```
-
-### Option C: Using the Automated Wireless Deploy Script
-
-The repository provides an interactive deployment script (`scripts/wireless-deploy.js`) that supports wireless pairing, device discovery via mDNS, automatic Gradle compilation, installing, and launching the app on your Android device over Wi-Fi (or USB). It works with `bun` or `node`.
-
-#### Requirements:
-- Either [Bun](https://bun.sh) (`bun`) or [Node.js](https://nodejs.org) (`node >= 18`) installed.
-- Android phone with **Developer Options** and **Wireless Debugging** (Android 11+) or **USB Debugging** enabled on the same Wi-Fi network.
-
-#### Usage:
-
-1. **Standard Run (Build + Connect/Pair + Install + Launch)**:
-   ```bash
-   # Using Bun script:
-   bun run deploy
-   # (explicit debug alias)
-   bun run deploy:debug
-
-   # Or direct script execution:
-   bun run scripts/wireless-deploy.js
-   node scripts/wireless-deploy.js
-   ```
-
-2. **Optimized Release Run (Build + Install + Launch the production APK)**:
-   ```bash
-   # Using Bun script:
-   bun run deploy:release
-
-   # Or direct script execution:
-   bun run scripts/wireless-deploy.js --release
-   node scripts/wireless-deploy.js -r
-   ```
-
-3. **Skip Build (Fast Re-deploy of existing APK)**:
-   ```bash
-   # Using Bun script:
-   bun run install:device
-   # (explicit debug alias)
-   bun run install:device:debug
-   # (release APK, no rebuild)
-   bun run install:device:release
-
-   # Or direct flags:
-   bun run scripts/wireless-deploy.js --skip-build
-   node scripts/wireless-deploy.js -s
-   bun run scripts/wireless-deploy.js --release --skip-build
-   node scripts/wireless-deploy.js -r -s
-   ```
-
-4. **Force Re-pairing Step**:
-   ```bash
-   # Using Bun script:
-   bun run pair
-
-   # Or direct flags:
-   bun run scripts/wireless-deploy.js --pair
-   node scripts/wireless-deploy.js -p
-   ```
-
-The script will guide you step-by-step through pairing code entry (if not already paired), connect to the device, install `app-debug.apk` (or `app-release.apk` with `--release`), and immediately start `MainActivity`.
-
-#### Script reference
-
-| Bun script | What it does |
+| Layer | Technologies |
 |---|---|
-| `bun run deploy` / `deploy:debug` | Build the debug APK, then pair/connect, install and launch |
-| `bun run deploy:release` | Build the optimized release APK, then pair/connect, install and launch |
-| `bun run install:device` / `install:device:debug` | Re-install the existing debug APK (no rebuild) |
-| `bun run install:device:release` | Re-install the existing release APK (no rebuild) |
-| `bun run pair` | Re-pair the device with this computer |
-
-From the repository root (`022-esper/`), the same actions are available as
-`bun run android:build`, `bun run android:build:release`,
-`bun run android:deploy`, `bun run android:deploy:release` and
-`bun run android:install:release`.
+| **Language** | Kotlin 2.0+ (Targeting JVM 17 / Android SDK 35, minSdk 26) |
+| **UI Framework** | Jetpack Compose + Material 3 Dark Palette |
+| **Local Cache** | Android Room Database (in-memory SQLite index of disk vaults) |
+| **Filesystem Sync** | Android Storage Access Framework (`DocumentFile`) + `java.io.File` |
+| **Math Engine** | KaTeX (rendered via local lightweight WebView component) |
+| **Image Pipeline** | Coil with SVG decoding and Data URI support |
+| **Serialization** | Google Gson |
 
 ---
 
-### Option D: Using a Physical Android Device via Manual ADB (USB)
+## 🚀 Building & Deploying via CLI
 
-1. Enable **Developer Options** and **USB Debugging** on your phone.
-2. Connect your phone via USB.
-3. Verify connection:
-   ```bash
-   adb devices
-   ```
-4. Install and start the application:
-   ```bash
-   adb install -r -d app/build/outputs/apk/release/app-release.apk
-   adb shell am start -n com.johnesleyer.esper/com.esper.android.MainActivity
-   ```
+Kepler can be developed, built, and tested completely headlessly on Linux, macOS, or Windows without opening Android Studio.
 
----
+### 1. Prerequisites
+- **JDK 17** (`openjdk-17-jdk` or via SDKMAN)
+- **Android Command-Line Tools & SDK 35** (`platforms;android-35`, `build-tools;35.0.0`)
+- **Bun** or **Node.js** (optional, for wireless deployment automation)
 
-### Option E: Using a Headless / GUI Android Emulator via CLI
+### 2. Build APKs
 
-1. **Create an Android Virtual Device (AVD)**:
-   ```bash
-   avdmanager create avd \
-     -n esper_emulator \
-     -k "system-images;android-34;google_apis;x86_64" \
-     -d "pixel_6"
-   ```
-
-2. **Launch the Emulator**:
-   - With GUI window:
-     ```bash
-     emulator -avd esper_emulator &
-     ```
-   - Headless mode (no window, e.g. on a remote Linux server):
-     ```bash
-     emulator -avd esper_emulator -no-window -no-audio -gpu swiftshader_indirect &
-     ```
-
-3. **Wait for boot to finish**:
-   ```bash
-   adb wait-for-device shell 'while [[ "$(getprop sys.boot_completed)" != "1" ]]; do sleep 1; done;'
-   ```
-
-4. **Install & Launch Esper**:
-   ```bash
-   ./gradlew installDebug
-   adb shell am start -n com.johnesleyer.esper/com.esper.android.MainActivity
-   ```
-
----
-
-## 6. Viewing Logs & Debugging
-
-Stream real-time logcat output filtered by the application:
 ```bash
-adb logcat -v time | grep -E "com.johnesleyer.esper|com.esper.android|EsperBridge"
+# Debug build
+./gradlew assembleDebug
+# Output: app/build/outputs/apk/debug/app-debug.apk
+
+# Optimized release build (R8 minified)
+./gradlew assembleRelease
+# Output: app/build/outputs/apk/release/app-release.apk
 ```
 
-To stop the app:
+### 3. Run Automated Tests
+
 ```bash
-adb shell am force-stop com.johnesleyer.esper
+./gradlew testDebugUnitTest
 ```
+
+### 4. Deploy to Device
+
+#### Automated Wireless Deploy (Recommended)
+Using the included deployment script:
+
+```bash
+# Debug install over Wi-Fi/ADB:
+bun run deploy
+# or: node scripts/wireless-deploy.js
+
+# Optimized release install:
+bun run deploy:release
+
+# Fast reinstall (skips recompilation if APK is up to date):
+bun run install:device
+```
+
+#### Manual ADB Install (USB or Wi-Fi)
+
+```bash
+adb install -r -d app/build/outputs/apk/release/app-release.apk
+adb shell am start -n com.johnesleyer.esper/com.esper.android.MainActivity
+```
+
+---
+
+## 📄 License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
