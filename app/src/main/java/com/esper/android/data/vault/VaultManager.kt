@@ -152,7 +152,15 @@ class VaultManager(
         const val BOOK_META_FILE = "book.json"
         const val QUESTIONS_FILE = "questions.json"
         const val VISUALS_DIR = "visuals"
+        const val CHAPTERS_DIR = "chapters"
+        const val SUBPAGES_DIR = "subpages"
     }
+
+    data class OrphanScanResult(
+        val bookId: String,
+        val bookTitle: String,
+        val orphanPageIds: List<String>
+    )
 
     private data class Node(
         val name: String,
@@ -292,14 +300,46 @@ class VaultManager(
 
     private suspend fun activeRoot(): Node? = withContext(Dispatchers.IO) {
         val ws = getActiveWorkspace() ?: return@withContext null
-        if (ws.treeUriString != null) {
+        val uriStr = ws.treeUriString ?: return@withContext null
+
+        // 1. Direct filesystem access (Obsidian mode): allows direct I/O to /storage/emulated/0/...
+        val displayPath = WorkspacePathHelper.getDisplayPath(uriStr)
+        if (displayPath.isNotBlank() && (displayPath.startsWith("/") || displayPath.startsWith("file:"))) {
             try {
-                val doc = DocumentFile.fromTreeUri(context, Uri.parse(ws.treeUriString))
-                if (doc != null && doc.exists() && doc.isDirectory) {
-                    return@withContext Node(doc.name ?: ws.name, doc = doc, isDirectory = true)
+                val cleanPath = displayPath.removePrefix("file://")
+                val f = File(cleanPath)
+                if (!f.exists()) {
+                    f.mkdirs()
+                }
+                if (f.exists() && f.isDirectory) {
+                    return@withContext Node(f.name.ifBlank { ws.name }, file = f, isDirectory = true)
                 }
             } catch (_: Exception) {}
         }
+
+        // 2. Storage Access Framework (SAF) DocumentFile fallback
+        try {
+            val uri = Uri.parse(uriStr)
+            val doc = if (DocumentsContract.isTreeUri(uri)) {
+                DocumentFile.fromTreeUri(context, uri)
+            } else {
+                DocumentFile.fromSingleUri(context, uri)
+            }
+            if (doc != null && doc.exists() && doc.isDirectory) {
+                return@withContext Node(doc.name ?: ws.name, doc = doc, isDirectory = true)
+            }
+        } catch (_: Exception) {}
+
+        // 3. Last fallback: check if resolved display path on device is directly accessible
+        if (displayPath.isNotBlank() && displayPath.startsWith("/storage/")) {
+            try {
+                val f = File(displayPath)
+                if (f.exists() && f.isDirectory) {
+                    return@withContext Node(f.name.ifBlank { ws.name }, file = f, isDirectory = true)
+                }
+            } catch (_: Exception) {}
+        }
+
         null
     }
 
@@ -331,6 +371,10 @@ class VaultManager(
                 if (!dir.exists() && !dir.mkdirs()) return null
                 Node(name, file = dir, isDirectory = true)
             } else {
+                val existing = parent.doc?.findFile(name)
+                if (existing != null && existing.isDirectory) {
+                    return Node(existing.name ?: name, doc = existing, isDirectory = true)
+                }
                 val doc = parent.doc?.createDirectory(name) ?: return null
                 Node(doc.name ?: name, doc = doc, isDirectory = true)
             }
@@ -358,7 +402,9 @@ class VaultManager(
     private fun writeText(parent: Node, name: String, content: String, mimeType: String = "text/plain"): Boolean {
         return try {
             if (parent.file != null) {
-                File(parent.file, name).writeText(content, Charsets.UTF_8)
+                val f = File(parent.file, name)
+                f.parentFile?.mkdirs()
+                f.writeText(content, Charsets.UTF_8)
                 true
             } else {
                 val dir = parent.doc ?: return false
@@ -375,7 +421,11 @@ class VaultManager(
     }
 
     private fun deleteNode(node: Node): Boolean = try {
-        node.file?.delete() ?: node.doc?.delete() ?: false
+        if (node.file != null) {
+            if (node.file.isDirectory) node.file.deleteRecursively() else node.file.delete()
+        } else {
+            node.doc?.delete() ?: false
+        }
     } catch (_: Exception) {
         false
     }
@@ -458,14 +508,21 @@ class VaultManager(
                 )
                 db.dao().upsertNotebook(notebook)
 
-                val mdFiles = listChildren(bookNode)
-                    .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+                // Load chapters from chapters/ folder, falling back to legacy root markdown files
+                val chaptersDir = findChild(bookNode, CHAPTERS_DIR)
+                val chapterParent = chaptersDir ?: bookNode
+                val chapterFiles = listChildren(chapterParent)
+                    .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) && !it.name.equals(BOOK_META_FILE, ignoreCase = true) }
                     .sortedWith { a, b -> naturalCompare(a.name, b.name) }
 
-                val pages = mdFiles.mapIndexed { idx, node ->
+                val chapterRegex = Regex("""^(\d+)_([a-zA-Z0-9\-]+)_(.+)\.md$""")
+
+                val chapters = chapterFiles.mapIndexed { idx, node ->
                     val content = readText(node) ?: ""
+                    val chMatch = chapterRegex.matchEntire(node.name)
+                    val chId = chMatch?.groupValues?.get(2) ?: pageId(bookId, node.name)
                     PageEntity(
-                        id = pageId(bookId, node.name),
+                        id = chId,
                         notebookId = bookId,
                         parentId = null,
                         title = extractChapterTitle(content, node.name, idx),
@@ -474,8 +531,28 @@ class VaultManager(
                     )
                 }
 
+                // Load subpages from subpages/ folder (<id>.md)
+                val subpagesDir = findChild(bookNode, SUBPAGES_DIR)
+                val subpageFiles = subpagesDir?.let { dir ->
+                    listChildren(dir).filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+                } ?: emptyList()
+
+                val subpages = subpageFiles.map { node ->
+                    val content = readText(node) ?: ""
+                    val pageId = node.name.removeSuffix(".md").removeSuffix(".MD")
+                    PageEntity(
+                        id = pageId,
+                        notebookId = bookId,
+                        parentId = "subpage",
+                        title = extractSubpageTitle(content, pageId),
+                        notes = content,
+                        position = 9999
+                    )
+                }
+
+                val allPages = chapters + subpages
                 db.dao().deletePagesForNotebook(bookId)
-                if (pages.isNotEmpty()) db.dao().upsertPages(pages)
+                if (allPages.isNotEmpty()) db.dao().upsertPages(allPages)
 
                 val questionsFile = findChild(bookNode, QUESTIONS_FILE)
                 val questions = questionsFile?.let { node ->
@@ -540,10 +617,26 @@ class VaultManager(
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 val book = findBook(notebookId) ?: return@withLock false
-                val target = listChildren(book)
-                    .firstOrNull { !it.isDirectory && pageId(notebookId, it.name) == pageId }
+
+                // 1. Check if target is a subpage in subpages/
+                val subpagesDir = findChild(book, SUBPAGES_DIR)
+                val subpageTarget = subpagesDir?.let { findChild(it, "$pageId.md") }
+                if (subpageTarget != null) {
+                    val written = writeText(subpagesDir, "$pageId.md", newNotes, "text/markdown")
+                    if (written) touchBookMeta(book)
+                    return@withLock written
+                }
+
+                // 2. Check chapters/ directory or root directory
+                val chaptersDir = findChild(book, CHAPTERS_DIR)
+                val searchDir = chaptersDir ?: book
+                val target = listChildren(searchDir)
+                    .firstOrNull { !it.isDirectory && (it.name.contains("_$pageId") || it.name.contains(pageId) || pageId(notebookId, it.name) == pageId) }
+                    ?: listChildren(book).firstOrNull { !it.isDirectory && pageId(notebookId, it.name) == pageId }
                     ?: return@withLock false
-                val written = writeText(book, target.name, newNotes, "text/markdown")
+
+                val writeParent = if (chaptersDir != null && listChildren(chaptersDir).any { it.name == target.name }) chaptersDir else book
+                val written = writeText(writeParent, target.name, newNotes, "text/markdown")
                 if (written) touchBookMeta(book)
                 written
             }
@@ -552,17 +645,20 @@ class VaultManager(
     suspend fun createChapter(notebookId: String, title: String): PageEntity? = withContext(Dispatchers.IO) {
         mutex.withLock {
             val book = findBook(notebookId) ?: return@withLock null
-            val existing = listChildren(book).filter {
+            val chaptersDir = findChild(book, CHAPTERS_DIR) ?: createDirectory(book, CHAPTERS_DIR) ?: book
+            val existing = listChildren(chaptersDir).filter {
                 !it.isDirectory && it.name.endsWith(".md", ignoreCase = true)
             }
             val nextIndex = (existing.mapNotNull { chapterIndexFromName(it.name) }.maxOrNull() ?: 0) + 1
-            val fileName = chapterFileName(nextIndex, title)
+            val chId = "ch-" + UUID.randomUUID().toString().take(4)
+            val fileName = chapterFileName(nextIndex, chId, title)
             val content = "# $title\n\n"
-            if (!writeText(book, fileName, content, "text/markdown")) return@withLock null
+            if (!writeText(chaptersDir, fileName, content, "text/markdown")) return@withLock null
             touchBookMeta(book)
             PageEntity(
-                id = pageId(notebookId, fileName),
+                id = chId,
                 notebookId = notebookId,
+                parentId = null,
                 title = title,
                 notes = content,
                 position = existing.size
@@ -570,15 +666,100 @@ class VaultManager(
         }
     }
 
+    suspend fun createSubpageWithId(notebookId: String, subpageId: String, title: String): PageEntity? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val book = findBook(notebookId) ?: return@withLock null
+            val subpagesDir = findChild(book, SUBPAGES_DIR) ?: createDirectory(book, SUBPAGES_DIR) ?: return@withLock null
+            val fileName = "$subpageId.md"
+            val content = "# $title\n\n"
+            if (!writeText(subpagesDir, fileName, content, "text/markdown")) return@withLock null
+            touchBookMeta(book)
+            val entity = PageEntity(
+                id = subpageId,
+                notebookId = notebookId,
+                parentId = "subpage",
+                title = title,
+                notes = content,
+                position = 9999
+            )
+            db.dao().upsertPage(entity)
+            entity
+        }
+    }
+
     suspend fun deleteChapter(notebookId: String, pageId: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             val book = findBook(notebookId) ?: return@withLock
-            val target = listChildren(book)
-                .firstOrNull { !it.isDirectory && pageId(notebookId, it.name) == pageId }
+            val subpagesDir = findChild(book, SUBPAGES_DIR)
+            val subTarget = subpagesDir?.let { findChild(it, "$pageId.md") }
+            if (subTarget != null) {
+                deleteNode(subTarget)
+                touchBookMeta(book)
+                return@withLock
+            }
+
+            val chaptersDir = findChild(book, CHAPTERS_DIR)
+            val searchDir = chaptersDir ?: book
+            val target = listChildren(searchDir)
+                .firstOrNull { !it.isDirectory && (it.name.contains("_$pageId") || it.name.contains(pageId) || pageId(notebookId, it.name) == pageId) }
+                ?: listChildren(book).firstOrNull { !it.isDirectory && pageId(notebookId, it.name) == pageId }
+
             if (target != null) {
                 deleteNode(target)
                 touchBookMeta(book)
             }
+        }
+    }
+
+    suspend fun scanOrphanSubpages(): List<OrphanScanResult> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val root = activeRoot() ?: return@withLock emptyList()
+            val books = listChildren(root).filter { it.isDirectory && !it.name.startsWith(".") }
+            val results = mutableListOf<OrphanScanResult>()
+
+            for (bookNode in books) {
+                val bookId = bookIdOf(bookNode)
+                val subpagesDir = findChild(bookNode, SUBPAGES_DIR) ?: continue
+                val subpageFiles = listChildren(subpagesDir).filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+                if (subpageFiles.isEmpty()) continue
+
+                val chaptersDir = findChild(bookNode, CHAPTERS_DIR) ?: bookNode
+                val chapterFiles = listChildren(chaptersDir).filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+                val allChapterTexts = chapterFiles.mapNotNull { readText(it) }
+                val allSubpageTexts = subpageFiles.associate { it.name.removeSuffix(".md") to (readText(it) ?: "") }
+
+                val orphans = mutableListOf<String>()
+                for (subpage in subpageFiles) {
+                    val pageId = subpage.name.removeSuffix(".md")
+                    val linkTarget = "kepler-page://$pageId"
+                    val foundInChapters = allChapterTexts.any { it.contains(linkTarget) }
+                    val foundInSiblings = allSubpageTexts.entries.any { it.key != pageId && it.value.contains(linkTarget) }
+
+                    if (!foundInChapters && !foundInSiblings) {
+                        orphans.add(pageId)
+                    }
+                }
+
+                if (orphans.isNotEmpty()) {
+                    val metaTitle = findChild(bookNode, BOOK_META_FILE)?.let { readText(it) }?.let {
+                        try { (gson.fromJson(it, Map::class.java)["title"] as? String) } catch (_: Exception) { null }
+                    } ?: bookNode.name
+                    results.add(OrphanScanResult(bookId, metaTitle, orphans))
+                }
+            }
+            results
+        }
+    }
+
+    suspend fun deleteOrphanSubpages(bookId: String, orphanIds: List<String>) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val book = findBook(bookId) ?: return@withLock
+            val subpagesDir = findChild(book, SUBPAGES_DIR) ?: return@withLock
+            for (id in orphanIds) {
+                findChild(subpagesDir, "$id.md")?.let { deleteNode(it) }
+                db.dao().deletePageAndChildren(bookId, id)
+            }
+            touchBookMeta(book)
         }
     }
 
@@ -594,6 +775,8 @@ class VaultManager(
             val root = activeRoot() ?: return@withLock null
             val folderName = uniqueBookFolderName(root, title)
             val book = createDirectory(root, folderName) ?: return@withLock null
+            val chaptersDir = createDirectory(book, CHAPTERS_DIR) ?: book
+            createDirectory(book, SUBPAGES_DIR)
             createDirectory(book, VISUALS_DIR)
 
             val bookId = "book-" + UUID.randomUUID().toString().take(8)
@@ -611,9 +794,10 @@ class VaultManager(
                 "updatedAt" to now
             )
             writeText(book, BOOK_META_FILE, gson.toJson(meta), "application/json")
-            val chapterName = chapterFileName(1, "Introduction")
+            val chId = "ch-" + UUID.randomUUID().toString().take(4)
+            val chapterName = chapterFileName(1, chId, "Introduction")
             val chapterContent = "# $title\n\nWelcome to your notebook.\n"
-            writeText(book, chapterName, chapterContent, "text/markdown")
+            writeText(chaptersDir, chapterName, chapterContent, "text/markdown")
 
             val notebook = NotebookEntity(
                 id = bookId,
@@ -633,7 +817,7 @@ class VaultManager(
             db.dao().upsertNotebook(notebook)
             db.dao().upsertPage(
                 PageEntity(
-                    id = pageId(bookId, chapterName),
+                    id = chId,
                     notebookId = bookId,
                     title = "Introduction",
                     notes = chapterContent,
@@ -676,17 +860,21 @@ class VaultManager(
             meta["tags"] = tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
             meta["updatedAt"] = now
             writeText(book, BOOK_META_FILE, gson.toJson(meta), "application/json")
-            db.dao().upsertNotebook(
-                notebook.copy(
-                    title = title,
-                    description = description,
-                    tagsCsv = tags,
-                    coverPreset = preset,
-                    coverImage = coverImage,
-                    showTitleOnCover = showTitleOnCover,
-                    updatedAt = now
-                )
+            val updated = notebook.copy(
+                title = title,
+                description = description,
+                tagsCsv = tags,
+                coverPreset = preset,
+                coverImage = coverImage,
+                showTitleOnCover = showTitleOnCover,
+                updatedAt = now
             )
+            // Use updateNotebook to prevent SQLite OnConflictStrategy.REPLACE from
+            // deleting the notebook row and triggering ON DELETE CASCADE on child pages.
+            db.dao().updateNotebook(updated)
+            if (db.dao().getNotebookById(notebook.id) == null) {
+                db.dao().upsertNotebook(updated)
+            }
         }
     }
 
@@ -905,8 +1093,20 @@ class VaultManager(
             }
             return trimmed.take(100)
         }
-        val clean = fileName.removeSuffix(".md").replace(Regex("^[0-9._\\-\\s]+"), "")
+        val clean = fileName.removeSuffix(".md").replace(Regex("^\\d+_[a-zA-Z0-9\\-]+_"), "").replace(Regex("^[0-9._\\-\\s]+"), "")
         return clean.ifEmpty { "Chapter ${idx + 1}" }.replace("_", " ")
+    }
+
+    private fun extractSubpageTitle(content: String, fallbackId: String): String {
+        for (line in content.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("---")) continue
+            if (trimmed.startsWith("#")) {
+                return trimmed.trimStart('#', ' ', '\t').take(100)
+            }
+            return trimmed.take(100)
+        }
+        return fallbackId
     }
 
     private fun visualTitle(fileName: String): String =
@@ -934,8 +1134,11 @@ class VaultManager(
             .take(60)
             .ifEmpty { "untitled" }
 
+    private fun chapterFileName(index: Int, chId: String, title: String): String =
+        String.format("%02d_%s_%s.md", index, chId, safeFileName(title).replace(" ", "_"))
+
     private fun chapterFileName(index: Int, title: String): String =
-        String.format("%02d_%s.md", index, safeFileName(title).replace(" ", "_"))
+        chapterFileName(index, "ch-" + UUID.randomUUID().toString().take(4), title)
 
     private fun uniqueBookFolderName(root: Node, title: String): String {
         val base = safeFileName(title).ifEmpty { "New Book" }

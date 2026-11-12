@@ -3,7 +3,10 @@ package com.esper.android
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -59,9 +62,26 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("kepler_bookmarks", Context.MODE_PRIVATE)
     }
 
+    private fun requestAllFilesAccessIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    startActivity(intent)
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestAllFilesAccessIfNeeded()
 
         setContent {
             EsperTheme {
@@ -364,6 +384,16 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             },
+                            onScanOrphans = {
+                                vaultManager.scanOrphanSubpages()
+                            },
+                            onDeleteOrphans = { bId, ids ->
+                                coroutineScope.launch {
+                                    vaultManager.deleteOrphanSubpages(bId, ids)
+                                    vaultManager.syncWorkspaceToLocalDatabase()
+                                    Toast.makeText(applicationContext, "Cleaned up ${ids.size} orphaned subpages", Toast.LENGTH_SHORT).show()
+                                }
+                            },
                             onNavigateBack = { popScreen() }
                         )
                     }
@@ -452,9 +482,16 @@ class MainActivity : ComponentActivity() {
                                             activeNotebookId = null
                                             navigateTo(ActiveScreen.BOOKSHELF)
                                         },
-                                        onSelectPage = { idx ->
-                                            activePageIndex = idx
-                                            val selectedPage = sortedPages.getOrNull(idx)
+onCreateSubpage = { subTitle ->
+                                             val subId = "page-" + UUID.randomUUID().toString().take(4)
+                                             coroutineScope.launch {
+                                                 vaultManager.createSubpageWithId(book.notebook.id, subId, subTitle)
+                                             }
+                                             subId
+                                         },
+                                         onSelectPage = { idx ->
+                                             activePageIndex = idx
+                                             val selectedPage = sortedPages.getOrNull(idx)
                                             openTabItems = openTabItems.map { item ->
                                                 if (item.notebook.id == book.notebook.id) {
                                                     item.copy(

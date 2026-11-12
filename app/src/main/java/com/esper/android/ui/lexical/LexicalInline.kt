@@ -134,6 +134,7 @@ object LexicalInline {
 
     // ---------------------------------------------------------------- patterns
 
+    private const val CODE_DOUBLE = """``([^`\n]+)``"""
     private const val CODE = """`([^`\n]+)`"""
     private const val MATH = """\$([^$\n]+)\$"""
     private const val LINK = """\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)"""
@@ -146,6 +147,7 @@ object LexicalInline {
     private const val ITALIC_UNDER = """(?<![*_\w])_(?=\S)([^_\n]*?\S)_(?![*_\w])"""
     private const val EMOJI_RE = """(?<![0-9A-Za-z_\-]):([a-z0-9_+\-]{2,32}):"""
 
+    private val codeDoubleRe = Regex(CODE_DOUBLE)
     private val codeRe = Regex(CODE)
     private val mathRe = Regex(MATH)
     private val linkRe = Regex(LINK)
@@ -384,6 +386,7 @@ object LexicalInline {
             )
         }
 
+        consider(codeDoubleRe, "code", -1, 1)
         consider(codeRe, "code", 0, 1)
         consider(mathRe, "math", 1, 1)
         consider(linkRe, "link", 2, 1, 2)

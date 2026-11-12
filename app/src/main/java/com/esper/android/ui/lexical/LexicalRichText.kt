@@ -75,11 +75,12 @@ fun buildInlineText(
             is LexicalLineBreakNode -> append('\n')
 
             is LexicalLinkNode -> {
-                val label = node.text.ifBlank { node.url }
+                val isSubpage = node.url.startsWith("kepler-page://")
+                val label = if (isSubpage) "\uD83D\uDCC4 " + (node.text.ifBlank { "Subpage" }) else node.text.ifBlank { node.url }
                 val style = SpanStyle(
-                    color = colors.link,
+                    color = if (isSubpage) Color(0xFF60A5FA) else colors.link,
                     textDecoration = TextDecoration.Underline,
-                    fontWeight = base.fontWeight,
+                    fontWeight = if (isSubpage) FontWeight.SemiBold else base.fontWeight,
                     fontSize = base.fontSize
                 )
                 if (clickable && onLink != null) {

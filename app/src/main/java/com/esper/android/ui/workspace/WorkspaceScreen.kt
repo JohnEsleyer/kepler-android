@@ -74,6 +74,7 @@ fun WorkspaceScreen(
     onCreateQuestion: (title: String) -> Unit,
     onDeleteQuestion: (questionId: String) -> Unit,
     onOpenQuestionEditor: (QuestionEntity) -> Unit,
+    onCreateSubpage: ((title: String) -> String?)? = null,
     onSyncWithRemote: suspend () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -91,10 +92,23 @@ fun WorkspaceScreen(
     var showHtmlCodeEditor by remember { mutableStateOf(false) }
     var showDeleteCanvasConfirm by remember { mutableStateOf(false) }
 
-    val sortedPages = remember(pages) {
-        pages.sortedWith(compareBy({ it.position }, { it.id }))
+    val chapters = remember(pages) {
+        pages.filter { it.parentId == null }.sortedWith(compareBy({ it.position }, { it.id }))
     }
-    val activePage = sortedPages.getOrNull(activePageIndex)
+    val subpagesMap = remember(pages) {
+        pages.filter { it.parentId != null }.associateBy { it.id }
+    }
+
+    // Navigation breadcrumbs stack for Notion-style subpages (kepler-page://<id>)
+    var subpageStack by remember { mutableStateOf(listOf<String>()) }
+    val currentSubpageId = subpageStack.lastOrNull()
+
+    val activeChapter = chapters.getOrNull(activePageIndex)
+    val activePage = if (currentSubpageId != null) {
+        subpagesMap[currentSubpageId] ?: pages.find { it.id == currentSubpageId }
+    } else {
+        activeChapter
+    }
 
     // Unsaved-draft protection: every exit vector (system back, top bar back,
     // chapter switch, tabs, journal, configure book) goes through this guard.
@@ -132,6 +146,8 @@ fun WorkspaceScreen(
     BackHandler {
         if (unsavedGuard.isDialogVisible) {
             unsavedGuard.cancel()
+        } else if (subpageStack.isNotEmpty()) {
+            subpageStack = subpageStack.dropLast(1)
         } else if (leftChaptersDrawerState.isOpen) {
             coroutineScope.launch { leftChaptersDrawerState.close() }
         } else {
@@ -149,11 +165,12 @@ fun WorkspaceScreen(
         gesturesEnabled = true,
         drawerContent = {
             ChapterDrawerContent(
-                pages = sortedPages,
+                pages = chapters,
                 canvases = canvases,
                 activePageIndex = activePageIndex,
                 onSelectPage = { idx ->
                     guardNavigation {
+                        subpageStack = emptyList()
                         coroutineScope.launch { leftChaptersDrawerState.close() }
                         onSelectPage(idx)
                     }
@@ -173,13 +190,22 @@ fun WorkspaceScreen(
                     title = {
                         Column {
                             Text(notebookTitle, style = MaterialTheme.typography.titleSmall, maxLines = 1, color = TextPrimary)
-                            activePage?.let { page ->
+                            if (subpageStack.isNotEmpty()) {
                                 Text(
-                                    text = "${activePageIndex + 1}. ${page.title}",
+                                    text = "${activeChapter?.title ?: "Chapter"} \u203A ${activePage?.title ?: "Subpage"}",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = IndigoGlow,
+                                    color = Color(0xFF60A5FA),
                                     maxLines = 1
                                 )
+                            } else {
+                                activePage?.let { page ->
+                                    Text(
+                                        text = "${activePageIndex + 1}. ${page.title}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = IndigoGlow,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     },
@@ -340,20 +366,58 @@ fun WorkspaceScreen(
                                 }
                             }
                         } else {
-                            activePage?.let { page ->
-                                key(page.id) {
-                                ComposeLexicalEditor(
-                                    initialMarkdown = page.notes,
-                                    onContentChanged = { currentNotes = it },
-                                    onHasUnsavedChangesChanged = { unsavedGuard.setDirty(it) },
-                                    onSave = { updatedNotes ->
-                                        onSaveNotes(page.id, updatedNotes)
-                                    },
-                                    onTimestampClicked = { seconds ->
-                                        Toast.makeText(context, "Timestamp: ${seconds}s", Toast.LENGTH_SHORT).show()
-                                    },
-                                    readOnly = isReadOnly
-                                )
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                if (subpageStack.isNotEmpty()) {
+                                    Surface(
+                                        color = CosmicSlate,
+                                        border = BorderStroke(1.dp, BorderSlate),
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            IconButton(
+                                                onClick = { subpageStack = subpageStack.dropLast(1) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = IndigoGlow, modifier = Modifier.size(16.dp))
+                                            }
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "${activeChapter?.title ?: "Chapter"} / ${activePage?.title ?: "Subpage"}",
+                                                color = TextSecondary,
+                                                fontSize = 12.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+
+                                activePage?.let { page ->
+                                    key(page.id) {
+                                        ComposeLexicalEditor(
+                                            initialMarkdown = page.notes,
+                                            onContentChanged = { currentNotes = it },
+                                            onHasUnsavedChangesChanged = { unsavedGuard.setDirty(it) },
+                                            onSave = { updatedNotes ->
+                                                onSaveNotes(page.id, updatedNotes)
+                                            },
+                                            onTimestampClicked = { seconds ->
+                                                Toast.makeText(context, "Timestamp: ${seconds}s", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onLinkClicked = { url ->
+                                                if (url.startsWith("kepler-page://")) {
+                                                    val subId = url.removePrefix("kepler-page://").trim()
+                                                    subpageStack = subpageStack + subId
+                                                }
+                                            },
+                                            onCreateSubpage = onCreateSubpage,
+                                            readOnly = isReadOnly,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
                                 }
                             }
                         }

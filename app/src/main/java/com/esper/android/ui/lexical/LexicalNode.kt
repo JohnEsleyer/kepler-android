@@ -115,6 +115,20 @@ data class LexicalHorizontalRuleNode(
 ) : LexicalBlockNode()
 
 /**
+ * First-class Notion-style child subpage reference block:
+ * `[Title](kepler-page://<id>)`.
+ */
+data class LexicalSubpageBlockNode(
+    override val key: String,
+    val pageId: String,
+    val title: String,
+    override val lineStart: Int = 0,
+    override val lineEnd: Int = 0
+) : LexicalBlockNode() {
+    override val plainText: String get() = title
+}
+
+/**
  * A run of one or more source lines that the author left empty on purpose
  * (two or more consecutive blank lines). Rendering these as real vertical
  * space is what makes "press Enter twice" work in the rendered view.

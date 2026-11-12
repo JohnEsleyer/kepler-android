@@ -29,6 +29,7 @@ object LexicalParser {
     private val delimiterCellRegex = Regex("""^:?\s*-+\s*:?$""")
     private val fenceRegex = Regex("""^(`{3,}|~{3,})(.*)$""")
     private val headingRegex = Regex("""^(#{1,6})\s+(.*)$""")
+    private val subpageBlockRegex = Regex("""^\[([^\]]+)\]\(kepler-page:\/\/([a-zA-Z0-9_\-]+)\)$""")
 
     // ---------------------------------------------------------------- parsing
 
@@ -142,6 +143,21 @@ object LexicalParser {
                     key = "block_${blocks.size}",
                     altText = image.groupValues[1],
                     imageUrl = image.groupValues[2],
+                    lineStart = i,
+                    lineEnd = i
+                )
+                i++
+                listStack.clear()
+                continue
+            }
+
+            // ------------------------------------------------------ subpage block
+            val subpageMatch = subpageBlockRegex.matchEntire(trimmed)
+            if (subpageMatch != null) {
+                blocks += LexicalSubpageBlockNode(
+                    key = "block_${blocks.size}",
+                    title = subpageMatch.groupValues[1],
+                    pageId = subpageMatch.groupValues[2],
                     lineStart = i,
                     lineEnd = i
                 )
@@ -353,6 +369,7 @@ object LexicalParser {
         if (trimmed.isEmpty()) return true
         if (isFence(trimmed) || isMathFence(trimmed)) return true
         if (isHorizontalRule(trimmed)) return true
+        if (subpageBlockRegex.matches(trimmed)) return true
         if (headingRegex.matches(trimmed)) return true
         if (trimmed.startsWith(">")) return true
         if (parseListMarker(line) != null) return true
@@ -394,6 +411,7 @@ object LexicalParser {
         val trimmed = lines[index].trim()
         if (isFence(trimmed) || isMathFence(trimmed)) return true
         if (isHorizontalRule(trimmed)) return true
+        if (subpageBlockRegex.matches(trimmed)) return true
         if (headingRegex.matches(trimmed)) return true
         if (trimmed.startsWith(">")) return true
         if (parseListMarker(lines[index]) != null) return true

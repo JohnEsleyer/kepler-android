@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.esper.android.data.vault.WorkspacePathHelper
 import com.esper.android.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +38,8 @@ fun SettingsScreen(
     onSelectWorkspaceFolder: (Uri) -> Unit,
     onExportZip: () -> Unit,
     onImportPackage: (Uri) -> Unit,
+    onScanOrphans: (suspend () -> List<com.esper.android.data.vault.VaultManager.OrphanScanResult>)? = null,
+    onDeleteOrphans: ((bookId: String, orphanIds: List<String>) -> Unit)? = null,
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -55,6 +58,9 @@ fun SettingsScreen(
     val displayPath = remember(workspaceLocation) {
         WorkspacePathHelper.getDisplayPath(workspaceLocation)
     }
+    val coroutineScope = rememberCoroutineScope()
+    var orphanScanResults by remember { mutableStateOf<List<com.esper.android.data.vault.VaultManager.OrphanScanResult>?>(null) }
+    var isScanningOrphans by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -224,6 +230,71 @@ fun SettingsScreen(
                         Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(if (displayPath.isNotEmpty()) "Change workspace folder" else "Open workspace folder")
+                    }
+                }
+            }
+
+            if (onScanOrphans != null) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = CosmicSlate,
+                    border = BorderStroke(1.dp, BorderSlate)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Universal Orphan Subpages Scanner", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(
+                            text = "Scans all books for subpages (<id>.md) whose links do not exist in any chapter or sibling subpage.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    isScanningOrphans = true
+                                    try {
+                                        orphanScanResults = onScanOrphans()
+                                    } finally {
+                                        isScanningOrphans = false
+                                    }
+                                }
+                            },
+                            enabled = !isScanningOrphans && displayPath.isNotEmpty(),
+                            colors = ButtonDefaults.buttonColors(containerColor = IndigoAccent),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isScanningOrphans) "Scanning..." else "Scan for Orphan Subpages")
+                        }
+
+                        orphanScanResults?.let { results ->
+                            val total = results.sumOf { it.orphanPageIds.size }
+                            if (total == 0) {
+                                Text("No orphaned subpages found! All child pages are referenced.", color = EmeraldSync, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            } else {
+                                Text("Found $total unreferenced subpages across ${results.size} notebooks:", color = AmberGlow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                results.forEach { res ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("${res.bookTitle}: ${res.orphanPageIds.size} orphans", color = TextPrimary, fontSize = 11.sp)
+                                        TextButton(
+                                            onClick = {
+                                                onDeleteOrphans?.invoke(res.bookId, res.orphanPageIds)
+                                                orphanScanResults = orphanScanResults?.filterNot { it.bookId == res.bookId }
+                                            }
+                                        ) {
+                                            Text("Clean Up", color = RoseRuby, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

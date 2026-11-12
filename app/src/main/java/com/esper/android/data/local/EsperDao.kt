@@ -61,6 +61,9 @@ interface EsperDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertNotebook(notebook: NotebookEntity)
 
+    @Update
+    suspend fun updateNotebook(notebook: NotebookEntity)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPages(pages: List<PageEntity>)
 

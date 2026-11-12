@@ -19,7 +19,8 @@ object LexicalSource {
         is LexicalQuoteNode,
         is LexicalListItemNode,
         is LexicalCodeBlockNode,
-        is LexicalMathBlockNode -> true
+        is LexicalMathBlockNode,
+        is LexicalSubpageBlockNode -> true
         else -> false
     }
 
@@ -521,6 +522,7 @@ object LexicalSource {
     fun editableText(markdown: String, block: LexicalBlockNode): String {
         val lines = markdown.split('\n')
         return when (block) {
+            is LexicalSubpageBlockNode -> "[${block.title}](kepler-page://${block.pageId})"
             is LexicalCodeBlockNode -> block.code
             is LexicalMathBlockNode -> block.latex
             is LexicalHeadingNode ->
@@ -556,6 +558,7 @@ object LexicalSource {
         val end = block.lineEnd.coerceIn(start, lines.size - 1)
 
         val replacement: List<String> = when (block) {
+            is LexicalSubpageBlockNode -> text.split('\n')
             is LexicalHeadingNode -> text.split('\n').mapIndexed { index, line ->
                 if (index == 0) "${"#".repeat(block.level)} $line" else line
             }
@@ -687,6 +690,79 @@ object LexicalSource {
         val at = (afterLine ?: lines.size).coerceIn(0, lines.size)
         lines.add(at, "")
         return SplitResult(lines.joinToString("\n"), at)
+    }
+
+    /**
+     * Swaps [block] with the block immediately preceding it in the AST.
+     */
+    fun moveBlockUp(markdown: String, block: LexicalBlockNode): String {
+        val blocks = LexicalParser.parseToLexicalAst(markdown)
+        val index = blocks.indexOfFirst { it.key == block.key }
+        if (index <= 0) return markdown
+        val prevBlock = blocks[index - 1]
+
+        val lines = markdown.split('\n').toMutableList()
+        val prevStart = prevBlock.lineStart
+        val prevEnd = prevBlock.lineEnd.coerceIn(prevStart, lines.size - 1)
+        val curStart = block.lineStart
+        val curEnd = block.lineEnd.coerceIn(curStart, lines.size - 1)
+        if (prevStart >= curStart) return markdown
+
+        val curLines = lines.subList(curStart, curEnd + 1).toList()
+        val prevLines = lines.subList(prevStart, prevEnd + 1).toList()
+        val gapLines = if (curStart > prevEnd + 1) {
+            lines.subList(prevEnd + 1, curStart).toList()
+        } else emptyList()
+
+        val newSegment = curLines + gapLines + prevLines
+        lines.subList(prevStart, curEnd + 1).clear()
+        lines.addAll(prevStart, newSegment)
+        return lines.joinToString("\n")
+    }
+
+    /**
+     * Inserts an empty paragraph block immediately after [block].
+     */
+    fun insertBlockBelow(markdown: String, block: LexicalBlockNode): String {
+        val lines = markdown.split('\n').toMutableList()
+        val insertIndex = (block.lineEnd + 1).coerceIn(0, lines.size)
+        lines.add(insertIndex, "")
+        lines.add(insertIndex + 1, "New note...")
+        return lines.joinToString("\n")
+    }
+
+    /**
+     * Swaps [block] with the block immediately succeeding it in the AST.
+     */
+    fun moveBlockDown(markdown: String, block: LexicalBlockNode): String {
+        val blocks = LexicalParser.parseToLexicalAst(markdown)
+        val index = blocks.indexOfFirst { it.key == block.key }
+        if (index < 0 || index >= blocks.size - 1) return markdown
+        val nextBlock = blocks[index + 1]
+        return moveBlockUp(markdown, nextBlock)
+    }
+
+    /**
+     * Transforms [block] into a new block type (H1, H2, H3, Paragraph, Quote, Bullet, Task, Code).
+     */
+    fun transformBlock(markdown: String, block: LexicalBlockNode, targetType: String): String {
+        val content = editableText(markdown, block)
+            .replace(Regex("""^#{1,6}\s+"""), "")
+            .replace(Regex("""^>\s+"""), "")
+            .replace(Regex("""^[-*+]\s+(\[[ xX]\]\s+)? """), "")
+            .trim()
+        val newText = when (targetType.lowercase()) {
+            "h1" -> "# $content"
+            "h2" -> "## $content"
+            "h3" -> "### $content"
+            "quote" -> "> $content"
+            "bullet" -> "- $content"
+            "task" -> "- [ ] $content"
+            "code" -> "```\n$content\n```"
+            "paragraph" -> content
+            else -> content
+        }
+        return withEditableText(markdown, block, newText)
     }
 
     // -------------------------------------------------------------- internals
