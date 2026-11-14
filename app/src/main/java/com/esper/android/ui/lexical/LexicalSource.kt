@@ -544,14 +544,28 @@ object LexicalSource {
      * structural marker so the document keeps its shape.
      */
     fun withEditableText(markdown: String, block: LexicalBlockNode, text: String): String {
+        if (markdown.isBlank()) {
+            return when (block) {
+                is LexicalHeadingNode -> "${"#".repeat(block.level)} $text"
+                is LexicalQuoteNode -> text.split('\n').joinToString("\n") { "> $it" }
+                is LexicalCodeBlockNode -> "```${block.language}\n$text\n```"
+                is LexicalMathBlockNode -> "$$\n$text\n$$"
+                is LexicalListItemNode -> "- $text"
+                else -> text
+            }
+        }
+
         val lines = markdown.split('\n').toMutableList()
 
-        // Synthetic trailing paragraph used to keep an empty document editable.
-        if (block.lineStart >= lines.size) {
-            val extra = text.split('\n')
-            while (lines.size < block.lineStart) lines.add("")
-            lines.addAll(extra)
-            return lines.joinToString("\n")
+        // Synthetic trailing paragraph used to keep an empty document editable and append new blocks.
+        // A block is defined by 1 empty space (\n\n) between sibling blocks.
+        if (block.key == "p@tail" || block.lineStart >= lines.size) {
+            val trimmedMarkdown = markdown.trimEnd('\n')
+            return if (trimmedMarkdown.isEmpty()) {
+                text
+            } else {
+                "$trimmedMarkdown\n\n$text"
+            }
         }
 
         val start = block.lineStart.coerceIn(0, lines.size - 1)
@@ -618,8 +632,15 @@ object LexicalSource {
         if (block.lineStart >= lines.size) return markdown
         val start = block.lineStart
         val end = block.lineEnd.coerceIn(start, lines.size - 1)
-        lines.subList(start, end + 1).clear()
-        return lines.joinToString("\n")
+        var removeStart = start
+        var removeEnd = end
+        if (removeEnd + 1 < lines.size && lines[removeEnd + 1].isBlank()) {
+            removeEnd += 1
+        } else if (removeStart - 1 >= 0 && lines[removeStart - 1].isBlank()) {
+            removeStart -= 1
+        }
+        lines.subList(removeStart, removeEnd + 1).clear()
+        return lines.joinToString("\n").trim()
     }
 
     /** Flips the `[ ]` / `[x]` marker of a task item without touching the text. */
@@ -724,10 +745,23 @@ object LexicalSource {
      * Inserts an empty paragraph block immediately after [block].
      */
     fun insertBlockBelow(markdown: String, block: LexicalBlockNode): String {
-        val lines = markdown.split('\n').toMutableList()
-        val insertIndex = (block.lineEnd + 1).coerceIn(0, lines.size)
-        lines.add(insertIndex, "")
-        lines.add(insertIndex + 1, "New note...")
+        if (markdown.isBlank()) return "New note..."
+        val trimmed = markdown.trimEnd('\n')
+        val lines = trimmed.split('\n').toMutableList()
+        val after = (block.lineEnd + 1).coerceIn(0, lines.size)
+
+        if (after >= lines.size) {
+            return "$trimmed\n\nNew note..."
+        }
+
+        val insertAt = if (lines[after].isBlank()) after + 1 else after
+        if (after == insertAt) {
+            lines.add(insertAt, "")
+            lines.add(insertAt + 1, "New note...")
+        } else {
+            lines.add(insertAt, "New note...")
+            lines.add(insertAt + 1, "")
+        }
         return lines.joinToString("\n")
     }
 

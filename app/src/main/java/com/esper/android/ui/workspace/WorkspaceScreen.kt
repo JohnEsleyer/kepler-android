@@ -155,10 +155,8 @@ fun WorkspaceScreen(
         }
     }
 
-    // While the keyboard is open the bottom bar would sit right above it,
-    // eating editor space (and its nav-bar padding shows as a dead strip).
-    // Hide the whole bar so the document gets the room instead.
-    val isImeVisible = WindowInsets.isImeVisible
+    // When the keyboard is open, hide the bottom bar so the editor has full viewport space.
+    val isImeVisible = WindowInsets.isImeVisible || WindowInsets.ime.getBottom(LocalDensity.current) > 0
 
     ModalNavigationDrawer(
         drawerState = leftChaptersDrawerState,
@@ -181,44 +179,59 @@ fun WorkspaceScreen(
         }
     ) {
         Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
                 Column {
                     if (isReadOnly) {
                         OfflineNoticeBanner()
                     }
                     TopAppBar(
-                    title = {
-                        Column {
-                            Text(notebookTitle, style = MaterialTheme.typography.titleSmall, maxLines = 1, color = TextPrimary)
-                            if (subpageStack.isNotEmpty()) {
-                                Text(
-                                    text = "${activeChapter?.title ?: "Chapter"} \u203A ${activePage?.title ?: "Subpage"}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFF60A5FA),
-                                    maxLines = 1
-                                )
-                            } else {
-                                activePage?.let { page ->
+                        title = {
+                            Column {
+                                if (subpageStack.isNotEmpty()) {
                                     Text(
-                                        text = "${activePageIndex + 1}. ${page.title}",
+                                        text = activePage?.title ?: "Subpage",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        text = "$notebookTitle \u203A ${activeChapter?.title ?: "Chapter"}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = IndigoGlow,
+                                        color = Color(0xFF60A5FA),
                                         maxLines = 1
                                     )
+                                } else {
+                                    Text(notebookTitle, style = MaterialTheme.typography.titleSmall, maxLines = 1, color = TextPrimary)
+                                    activePage?.let { page ->
+                                        Text(
+                                            text = "${activePageIndex + 1}. ${page.title}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = IndigoGlow,
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
-                        }
-                    },
-                    navigationIcon = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { guardNavigation { onNavigateBack() } }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                        },
+                        navigationIcon = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    if (subpageStack.isNotEmpty()) {
+                                        subpageStack = subpageStack.dropLast(1)
+                                    } else {
+                                        guardNavigation { onNavigateBack() }
+                                    }
+                                }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                                }
+                                if (subpageStack.isEmpty()) {
+                                    IconButton(onClick = { coroutineScope.launch { leftChaptersDrawerState.open() } }) {
+                                        Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Chapters Menu", tint = IndigoGlow)
+                                    }
+                                }
                             }
-                            IconButton(onClick = { coroutineScope.launch { leftChaptersDrawerState.open() } }) {
-                                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "Chapters Menu", tint = IndigoGlow)
-                            }
-                        }
-                    },
+                        },
                     actions = {
                         IconButton(onClick = { isAttachmentsSheetOpen = true }) {
                             Icon(Icons.Default.Attachment, contentDescription = "Attachments", tint = EmeraldSync)
@@ -367,34 +380,6 @@ fun WorkspaceScreen(
                             }
                         } else {
                             Column(modifier = Modifier.fillMaxSize()) {
-                                if (subpageStack.isNotEmpty()) {
-                                    Surface(
-                                        color = CosmicSlate,
-                                        border = BorderStroke(1.dp, BorderSlate),
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            IconButton(
-                                                onClick = { subpageStack = subpageStack.dropLast(1) },
-                                                modifier = Modifier.size(24.dp)
-                                            ) {
-                                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = IndigoGlow, modifier = Modifier.size(16.dp))
-                                            }
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "${activeChapter?.title ?: "Chapter"} / ${activePage?.title ?: "Subpage"}",
-                                                color = TextSecondary,
-                                                fontSize = 12.sp,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-                                }
-
                                 activePage?.let { page ->
                                     key(page.id) {
                                         ComposeLexicalEditor(

@@ -252,6 +252,20 @@ fun ComposeLexicalEditor(
 
     val blocks = remember(rawText) { LexicalParser.parseToLexicalAst(rawText) }
 
+    val displayBlocks = remember(blocks, rawText) {
+        val list = blocks.toMutableList()
+        if (list.isEmpty() || list.last().plainText.isNotEmpty()) {
+            val line = if (rawText.isBlank()) 0 else rawText.split('\n').size
+            list += LexicalParagraphNode(
+                key = "p@tail",
+                inlines = emptyList(),
+                lineStart = line,
+                lineEnd = line
+            )
+        }
+        list
+    }
+
     var isRawEditMode by remember { mutableStateOf(false) }
     var fieldValue by remember {
         mutableStateOf(TextFieldValue(initialMarkdown, TextRange(initialMarkdown.length)))
@@ -340,9 +354,12 @@ fun ComposeLexicalEditor(
 
     fun finishEditingCurrentBlock() {
         val curKey = editingKey ?: return
-        val active = blocks.find { it.key == curKey }
-        if (active != null && activeBlockEditBuffer != LexicalSource.editableText(textState.value, active)) {
-            commitBlockText(active, activeBlockEditBuffer)
+        val active = displayBlocks.find { it.key == curKey }
+        if (active != null) {
+            val originalText = LexicalSource.editableText(textState.value, active)
+            if (activeBlockEditBuffer != originalText) {
+                commitBlockText(active, activeBlockEditBuffer)
+            }
         }
         editingKey = null
     }
@@ -351,17 +368,17 @@ fun ComposeLexicalEditor(
         finishEditingCurrentBlock()
         if (action is LexicalAction.AddSubpage) {
             val newId = onCreateSubpage?.invoke("Subpage") ?: ("page-" + java.util.UUID.randomUUID().toString().take(4))
-            val snippet = "\n\n[Subpage](kepler-page://$newId)\n\n"
-            val updated = textState.value.trimEnd() + snippet
+            val snippet = "[Subpage](kepler-page://$newId)"
+            val base = textState.value.trimEnd('\n')
+            val updated = if (base.isEmpty()) snippet else "$base\n\n$snippet"
             commitText(updated)
             fieldValue = TextFieldValue(updated, TextRange(updated.length))
             editingKey = null
             return
         }
         val snippet = actionSnippet(action)
-        val base = textState.value
-        val separator = if (base.isEmpty() || base.endsWith("\n")) "" else "\n\n"
-        val updated = base + separator + snippet
+        val base = textState.value.trimEnd('\n')
+        val updated = if (base.isEmpty()) snippet else "$base\n\n$snippet"
         commitText(updated)
         fieldValue = TextFieldValue(updated, TextRange(updated.length))
         editingKey = null
@@ -381,20 +398,6 @@ fun ComposeLexicalEditor(
             saveStatusMessage = null
             lastSavedText = initialMarkdown
         }
-    }
-
-    val displayBlocks = remember(blocks, rawText) {
-        val list = blocks.toMutableList()
-        if (list.lastOrNull() !is LexicalParagraphNode) {
-            val line = rawText.split('\n').size
-            list += LexicalParagraphNode(
-                key = "p@tail",
-                inlines = emptyList(),
-                lineStart = line,
-                lineEnd = line
-            )
-        }
-        list
     }
 
     val canScrollDown by remember {
@@ -634,7 +637,7 @@ fun ComposeLexicalEditor(
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 16.dp)
+                    .padding(end = 16.dp, bottom = 10.dp)
             )
         }
     }
@@ -704,7 +707,20 @@ private fun BlockComponent(
                     .fillMaxWidth()
                     .wrapContentHeight()
                     .padding(12.dp)
-                    .focusRequester(focusRequester)
+                    .focusRequester(focusRequester),
+                decorationBox = { innerTextField ->
+                    Box {
+                        if (editBuffer.text.isEmpty()) {
+                            Text(
+                                text = "Start writing (or type /page, /code)...",
+                                color = TextMuted.copy(alpha = 0.6f),
+                                fontSize = 14.sp,
+                                lineHeight = 22.sp
+                            )
+                        }
+                        innerTextField()
+                    }
+                }
             )
         }
         return

@@ -154,6 +154,11 @@ class VaultManager(
         const val VISUALS_DIR = "visuals"
         const val CHAPTERS_DIR = "chapters"
         const val SUBPAGES_DIR = "subpages"
+
+        // Gallery protection + extensionless cover standard (matches desktop format)
+        const val NO_MEDIA_FILE = ".nomedia"
+        const val BOOK_COVER_FILE = "book.cover"
+        val LEGACY_COVER_FILES = listOf("cover.png", "cover.jpg", "cover.jpeg", "cover.webp", "cover.gif")
     }
 
     data class OrphanScanResult(
@@ -430,12 +435,122 @@ class VaultManager(
         false
     }
 
+    private fun readBytes(node: Node): ByteArray? {
+        return try {
+            if (node.file != null) {
+                node.file.takeIf { it.isFile }?.readBytes()
+            } else {
+                node.doc?.let { doc ->
+                    context.contentResolver.openInputStream(doc.uri)?.use { it.readBytes() }
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Writes raw bytes (e.g. cover images). Uses application/octet-stream so SAF
+     * providers never append a media extension to extensionless names such as
+     * `book.cover` (which would re-enable gallery indexing).
+     */
+    private fun writeBinary(parent: Node, name: String, bytes: ByteArray): Boolean {
+        return try {
+            if (parent.file != null) {
+                val f = File(parent.file, name)
+                f.parentFile?.mkdirs()
+                f.writeBytes(bytes)
+                true
+            } else {
+                val dir = parent.doc ?: return false
+                val existing = dir.findFile(name)
+                val file = existing ?: dir.createFile("application/octet-stream", name) ?: return false
+                context.contentResolver.openOutputStream(file.uri, "wt")?.use { out ->
+                    out.write(bytes)
+                } ?: return false
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Prepares a book folder for shared desktop/Android storage:
+     * 1. Drops a `.nomedia` file so the MediaScanner/Gallery never indexes notebook folders.
+     * 2. Migrates legacy cover images (cover.png/jpg/jpeg/webp/gif) to the canonical
+     *    extensionless `book.cover`, matching the desktop format.
+     */
+    private fun sanitizeBookFolder(bookNode: Node) {
+        if (findChild(bookNode, NO_MEDIA_FILE) == null) {
+            writeText(bookNode, NO_MEDIA_FILE, "", "application/octet-stream")
+        }
+
+        var migrated = false
+        for (legacy in LEGACY_COVER_FILES) {
+            val old = findChild(bookNode, legacy) ?: continue
+            if (findChild(bookNode, BOOK_COVER_FILE) == null) {
+                val bytes = readBytes(old)
+                if (bytes == null || !writeBinary(bookNode, BOOK_COVER_FILE, bytes)) continue
+            }
+            deleteNode(old)
+            migrated = true
+        }
+        if (!migrated) return
+
+        // Point book.json at the migrated cover file (shared desktop format).
+        val metaNode = findChild(bookNode, BOOK_META_FILE) ?: return
+        val raw = readText(metaNode) ?: return
+        try {
+            val type = object : TypeToken<MutableMap<String, Any?>>() {}.type
+            val map: MutableMap<String, Any?> = gson.fromJson(raw, type)
+            if (map["coverImage"] != BOOK_COVER_FILE) {
+                map["coverImage"] = BOOK_COVER_FILE
+                writeText(bookNode, BOOK_META_FILE, gson.toJson(map), "application/json")
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Converts a bare cover filename (e.g. `book.cover`) into a data URI for the
+     * local Room database. The on-disk book.json keeps the shared desktop format.
+     */
+    private fun resolveCoverImageForDb(bookNode: Node, raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("data:", true) ||
+            trimmed.startsWith("http://", true) ||
+            trimmed.startsWith("https://", true)
+        ) return trimmed
+
+        val fileName = if (trimmed.contains('.')) trimmed else BOOK_COVER_FILE
+        val coverNode = findChild(bookNode, fileName) ?: return null
+        val bytes = readBytes(coverNode) ?: return null
+        val mime = when {
+            bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 'P'.code.toByte() &&
+                bytes[2] == 'N'.code.toByte() && bytes[3] == 'G'.code.toByte() -> "image/png"
+            bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() &&
+                bytes[2] == 0xFF.toByte() -> "image/jpeg"
+            bytes.size >= 12 && String(bytes, 8, 4, Charsets.US_ASCII) == "WEBP" -> "image/webp"
+            bytes.size >= 6 && String(bytes, 0, 3, Charsets.US_ASCII) == "GIF" -> "image/gif"
+            else -> "image/png"
+        }
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        return "data:$mime;base64,$b64"
+    }
+
     // --------------------------------------------------------------- scanning
 
     suspend fun syncWorkspaceToLocalDatabase() = withContext(Dispatchers.IO) {
         mutex.withLock {
             val ws = getActiveWorkspace() ?: return@withLock
             val root = activeRoot() ?: return@withLock
+
+            // Keep the entire workspace tree out of the Android gallery.
+            if (findChild(root, NO_MEDIA_FILE) == null) {
+                writeText(root, NO_MEDIA_FILE, "", "application/octet-stream")
+            }
+
             val books = listChildren(root)
                 .filter { it.isDirectory && !it.name.startsWith(".") }
                 .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
@@ -443,6 +558,10 @@ class VaultManager(
             val foundBookIds = mutableSetOf<String>()
 
             for (bookNode in books) {
+                // Migrate legacy covers to book.cover and drop .nomedia before
+                // reading book.json so the meta below reflects the new format.
+                sanitizeBookFolder(bookNode)
+
                 val metaFile = findChild(bookNode, BOOK_META_FILE)
                 val metaMap: Map<String, Any?> = metaFile?.let { node ->
                     readText(node)?.let { raw ->
@@ -462,7 +581,12 @@ class VaultManager(
                 val title = (metaMap["title"] as? String)?.takeIf { it.isNotBlank() } ?: bookNode.name
                 val desc = (metaMap["description"] as? String) ?: ""
                 val preset = (metaMap["coverPreset"] as? String) ?: "celestial"
-                val coverImage = metaMap["coverImage"] as? String
+                val rawCoverImage = metaMap["coverImage"] as? String
+                // DB stores a renderable data URI; disk keeps the shared "book.cover" format.
+                val coverImage = resolveCoverImageForDb(bookNode, rawCoverImage)
+                // For freshly generated book.json files keep the canonical extensionless name.
+                val diskCoverImage = rawCoverImage
+                    ?: if (findChild(bookNode, BOOK_COVER_FILE) != null) BOOK_COVER_FILE else null
                 val showTitle = (metaMap["showTitleOnCover"] as? Boolean) ?: true
                 val tags = when (val t = metaMap["tags"]) {
                     is List<*> -> t.joinToString(",") { it.toString() }
@@ -481,7 +605,7 @@ class VaultManager(
                         "title" to title,
                         "description" to desc,
                         "coverPreset" to preset,
-                        "coverImage" to coverImage,
+                        "coverImage" to diskCoverImage,
                         "showTitleOnCover" to showTitle,
                         "tags" to tags.split(",").map { it.trim() },
                         "isPinned" to false,

@@ -144,7 +144,7 @@ class LexicalSourceTest {
 
         val updated = LexicalSource.withEditableText(markdown, synthetic, "after the list")
 
-        assertEquals("- a\nafter the list", updated)
+        assertEquals("- a\n\nafter the list", updated)
     }
 
     @Test

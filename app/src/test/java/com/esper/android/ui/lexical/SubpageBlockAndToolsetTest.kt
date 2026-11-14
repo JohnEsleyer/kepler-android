@@ -76,4 +76,22 @@ class SubpageBlockAndToolsetTest {
         val asTask = LexicalSource.transformBlock(markdown, block, "task")
         assertEquals("- [ ] Simple note", asTask)
     }
+
+    @Test
+    fun `blocks defined by 1 empty space parse as separate blocks while non-empty lines stay together`() {
+        val input = """
+            This is a text
+
+            This is a text too
+
+            I like Pizza
+            I like Cheese
+        """.trimIndent()
+
+        val blocks = LexicalParser.parseToLexicalAst(input)
+        assertEquals(3, blocks.size)
+        assertEquals("This is a text", blocks[0].plainText)
+        assertEquals("This is a text too", blocks[1].plainText)
+        assertEquals("I like Pizza\nI like Cheese", blocks[2].plainText)
+    }
 }
