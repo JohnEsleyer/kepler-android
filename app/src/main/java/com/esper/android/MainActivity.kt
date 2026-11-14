@@ -632,6 +632,12 @@ onCreateSubpage = { subTitle ->
                                     rescanCurrentWorkspace()
                                 }
                             },
+                            onCloseWorkspace = { wsId ->
+                                coroutineScope.launch {
+                                    vaultManager.removeWorkspace(wsId)
+                                    rescanCurrentWorkspace()
+                                }
+                            },
                             onOpenFolderWorkspace = { folderPickerLauncher.launch(null) },
                             onOpenAllTagsScreen = { navigateTo(ActiveScreen.ALL_TAGS) },
                             onOpenTabsScreen = { isTabsSheetOpen = true },

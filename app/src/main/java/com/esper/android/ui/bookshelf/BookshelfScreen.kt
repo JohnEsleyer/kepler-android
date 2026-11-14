@@ -69,6 +69,7 @@ fun BookshelfScreen(
     onToggleBookmark: (String) -> Unit = {},
     onClearAllBookmarks: () -> Unit = {},
     onSelectWorkspace: (String) -> Unit,
+    onCloseWorkspace: (String) -> Unit,
     onOpenFolderWorkspace: () -> Unit,
     onOpenAllTagsScreen: () -> Unit,
     onOpenTabsScreen: () -> Unit,
@@ -82,6 +83,7 @@ fun BookshelfScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var bookToDelete by remember { mutableStateOf<NotebookEntity?>(null) }
+    var workspaceToClose by remember { mutableStateOf<WorkspaceEntity?>(null) }
     var showClearBookmarksConfirm by remember { mutableStateOf(false) }
     var currentSort by remember { mutableStateOf(BookSortOption.RECENTLY_CREATED) }
     var sortDropdownExpanded by remember { mutableStateOf(false) }
@@ -249,6 +251,17 @@ fun BookshelfScreen(
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                             }
+                                        }
+                                        IconButton(
+                                            onClick = { workspaceToClose = ws },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Close Workspace",
+                                                tint = TextMuted,
+                                                modifier = Modifier.size(15.dp)
+                                            )
                                         }
                                         if (isSelected) {
                                             Icon(Icons.Default.Check, contentDescription = "Active", tint = EmeraldSync, modifier = Modifier.size(16.dp))
@@ -854,6 +867,19 @@ fun BookshelfScreen(
                     showClearBookmarksConfirm = false
                 },
                 onDismiss = { showClearBookmarksConfirm = false }
+            )
+        }
+
+        workspaceToClose?.let { ws ->
+            ConfirmDeleteDialog(
+                title = "Close Workspace",
+                message = "Remove \u201C${ws.name}\u201D from your workspaces list? The folder and its books will remain on disk.",
+                confirmText = "Remove",
+                onConfirm = {
+                    onCloseWorkspace(ws.id)
+                    workspaceToClose = null
+                },
+                onDismiss = { workspaceToClose = null }
             )
         }
     }
