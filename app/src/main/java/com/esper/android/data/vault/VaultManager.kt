@@ -860,9 +860,11 @@ class VaultManager(
                 }
             }
 
+            val timestamp = System.currentTimeMillis()
+
             // 1. Rename to temporary names to prevent collisions during swaps.
             val tempNodes = matchedNodes.mapIndexed { idx, node ->
-                val tempName = "${node.name}.tmp_$idx"
+                val tempName = "${node.name}.tmp_${timestamp}_$idx"
                 if (node.file != null) {
                     val dest = File(node.file.parentFile, tempName)
                     node.file.renameTo(dest)
@@ -879,7 +881,7 @@ class VaultManager(
             val chapterPrefixRegex = Regex("""^0*\d+_?""")
             tempNodes.forEachIndexed { idx, node ->
                 val originalCleanName = node.name
-                    .removeSuffix(".tmp_$idx")
+                    .substringBefore(".tmp_${timestamp}_$idx")
                     .replace(chapterPrefixRegex, "")
                 val finalName = String.format(Locale.ROOT, "%02d_%s", idx + 1, originalCleanName)
                 if (node.file != null) {
