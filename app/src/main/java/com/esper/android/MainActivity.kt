@@ -530,6 +530,32 @@ onCreateSubpage = { subTitle ->
                                                 }
                                             }
                                         },
+                                        onReorderPages = { fromIndex, toIndex ->
+                                            val currentPages = book.pages
+                                                .filter { it.parentId == null }
+                                                .sortedWith(compareBy({ it.position }, { it.id }))
+                                                .toMutableList()
+                                            if (fromIndex in currentPages.indices && toIndex in currentPages.indices) {
+                                                val moved = currentPages.removeAt(fromIndex)
+                                                currentPages.add(toIndex, moved)
+
+                                                // Keep the active chapter pointing at the same content.
+                                                if (activePageIndex == fromIndex) {
+                                                    activePageIndex = toIndex
+                                                } else if (fromIndex < activePageIndex && toIndex >= activePageIndex) {
+                                                    activePageIndex -= 1
+                                                } else if (fromIndex > activePageIndex && toIndex <= activePageIndex) {
+                                                    activePageIndex += 1
+                                                }
+
+                                                coroutineScope.launch {
+                                                    vaultManager.reorderChapters(
+                                                        book.notebook.id,
+                                                        currentPages.map { it.id }
+                                                    )
+                                                }
+                                            }
+                                        },
                                         onSaveNotes = { pageId, text ->
                                             val onDisk = vaultManager.saveChapterNotes(book.notebook.id, pageId, text)
                                             val derivedTitle = deriveChapterTitle(text)

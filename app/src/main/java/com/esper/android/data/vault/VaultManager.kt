@@ -835,6 +835,83 @@ class VaultManager(
         }
     }
 
+    /**
+     * Reorders the top-level chapters of a notebook to match [reorderedPageIds].
+     * Files are renamed with a fresh numeric prefix (01_, 02_, ...) and the
+     * persisted page positions are updated so both disk and database agree.
+     */
+    suspend fun reorderChapters(notebookId: String, reorderedPageIds: List<String>) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val book = findBook(notebookId) ?: return@withLock
+            val chaptersDir = findChild(book, CHAPTERS_DIR) ?: book
+            val allFiles = listChildren(chaptersDir).filter {
+                !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) && !it.name.equals(BOOK_META_FILE, ignoreCase = true)
+            }
+
+            // Map each page id to its on-disk node. Chapter files are named
+            // "<index>_<chapterId>_<title>.md", so prefer matching the chapter
+            // id segment before falling back to a plain contains() check.
+            val chapterIdRegex = Regex("""^\d+_([a-zA-Z0-9\-]+)_""")
+            val matchedNodes = reorderedPageIds.mapNotNull { id ->
+                allFiles.firstOrNull { node ->
+                    chapterIdRegex.find(node.name)?.groupValues?.get(1) == id ||
+                        node.name.contains("_$id") ||
+                        pageId(notebookId, node.name) == id
+                }
+            }
+
+            // 1. Rename to temporary names to prevent collisions during swaps.
+            val tempNodes = matchedNodes.mapIndexed { idx, node ->
+                val tempName = "${node.name}.tmp_$idx"
+                if (node.file != null) {
+                    val dest = File(node.file.parentFile, tempName)
+                    node.file.renameTo(dest)
+                    Node(tempName, file = dest, isDirectory = false)
+                } else if (node.doc != null) {
+                    node.doc.renameTo(tempName)
+                    Node(tempName, doc = node.doc, isDirectory = false)
+                } else {
+                    node
+                }
+            }
+
+            // 2. Rename each node to its new indexed sequence: 01_..., 02_...
+            val chapterPrefixRegex = Regex("""^0*\d+_?""")
+            tempNodes.forEachIndexed { idx, node ->
+                val originalCleanName = node.name
+                    .removeSuffix(".tmp_$idx")
+                    .replace(chapterPrefixRegex, "")
+                val finalName = String.format(Locale.ROOT, "%02d_%s", idx + 1, originalCleanName)
+                if (node.file != null) {
+                    val dest = File(node.file.parentFile, finalName)
+                    node.file.renameTo(dest)
+                } else if (node.doc != null) {
+                    node.doc.renameTo(finalName)
+                }
+            }
+
+            // 3. Update database positions so the UI order matches the disk.
+            val existingPages = db.dao().getPagesForNotebook(notebookId)
+            var nextPosition = reorderedPageIds.size
+            val updatedPages = existingPages.map { page ->
+                if (page.parentId != null) {
+                    page
+                } else {
+                    val newPosition = reorderedPageIds.indexOf(page.id)
+                    if (newPosition != -1) {
+                        page.copy(position = newPosition)
+                    } else {
+                        // Chapter not included in the request keeps its relative
+                        // order but is pushed after the reordered chapters.
+                        page.copy(position = nextPosition++)
+                    }
+                }
+            }
+            db.dao().upsertPages(updatedPages)
+            touchBookMeta(book)
+        }
+    }
+
     suspend fun scanOrphanSubpages(): List<OrphanScanResult> = withContext(Dispatchers.IO) {
         mutex.withLock {
             val root = activeRoot() ?: return@withLock emptyList()

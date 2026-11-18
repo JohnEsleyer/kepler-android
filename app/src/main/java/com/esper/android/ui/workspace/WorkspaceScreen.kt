@@ -66,6 +66,7 @@ fun WorkspaceScreen(
     onSelectPage: (Int) -> Unit,
     onCreatePage: (title: String, parentId: String?) -> Unit,
     onDeletePage: (pageId: String) -> Unit,
+    onReorderPages: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onSaveNotes: suspend (pageId: String, content: String) -> Boolean,
     onAttachCanvas: (title: String, kind: String, payload: String) -> Unit,
     onDeleteCanvas: (canvasId: String) -> Unit,
@@ -174,7 +175,8 @@ fun WorkspaceScreen(
                     }
                 },
                 onCreatePage = onCreatePage,
-                onDeletePage = onDeletePage
+                onDeletePage = onDeletePage,
+                onReorderPages = onReorderPages
             )
         }
     ) {
