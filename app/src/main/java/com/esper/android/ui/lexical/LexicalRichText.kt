@@ -107,7 +107,10 @@ fun buildInlineText(
                     fontSize = scaledTextSize(base.fontSize, 0.9f)
                 )
             ) {
-                append(node.latex)
+                // Inline math cannot host KaTeX; translate common commands
+                // (e.g. `\rightarrow`) to their Unicode glyphs so a line of
+                // token mappings reads naturally.
+                append(LatexSymbols.toInlineText(node.latex))
             }
 
             is LexicalTimestampNode -> {

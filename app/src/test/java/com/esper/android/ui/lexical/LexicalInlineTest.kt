@@ -72,6 +72,28 @@ class LexicalInlineTest {
         assertTrue(scan.spans.any { it.text == "s" && it.strike })
     }
 
+    // --------------------------------------------------------- latex symbols
+
+    @Test
+    fun `inline latex arrows and operators become unicode symbols`() {
+        assertEquals("\u2192", LatexSymbols.toInlineText("""\rightarrow"""))
+        assertEquals("\u2264 5 \u00D7 2", LatexSymbols.toInlineText("""\leq 5 \times 2"""))
+        assertEquals("IDENTIFIER", LatexSymbols.toInlineText("""\text{IDENTIFIER}"""))
+    }
+
+    @Test
+    fun `rendered inline math uses the translated symbol`() {
+        val inlines = LexicalInline.toNodes("""`total` $\rightarrow$ `IDENTIFIER`""")
+        val rendered = buildInlineText(
+            inlines = inlines,
+            base = SpanStyle(fontSize = 14.sp),
+            colors = colors,
+            clickable = false
+        )
+
+        assertEquals("total \u2192 IDENTIFIER", rendered.text)
+    }
+
     // --------------------------------------------------------- transformation
 
     @Test

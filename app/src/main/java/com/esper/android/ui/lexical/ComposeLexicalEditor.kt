@@ -944,17 +944,6 @@ private fun BlockComponent(
                     .padding(start = startPadding, top = 1.dp, bottom = 1.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                if (block.indentLevel > 0) {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 7.dp)
-                            .width(2.dp)
-                            .heightIn(min = 20.dp)
-                            .clip(RoundedCornerShape(1.dp))
-                            .background(IndigoAccent.copy(alpha = 0.22f))
-                    )
-                }
-
                 if (block.isTask) {
                     Checkbox(
                         checked = block.isChecked,
