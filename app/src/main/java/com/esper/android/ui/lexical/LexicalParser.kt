@@ -31,12 +31,24 @@ object LexicalParser {
     private val headingRegex = Regex("""^(#{1,6})\s+(.*)$""")
     private val subpageBlockRegex = Regex("""^\[([^\]]+)\]\(kepler-page:\/\/([a-zA-Z0-9_\-]+)\)$""")
 
+    /**
+     * One open list level. [indent] is the source column of the marker, not the
+     * content column, so a nested marker is recognised by how far it is
+     * indented. [isOrdered] lets us tell an ordered/unordered switch (which
+     * must nest) from a sibling item (which must not).
+     */
+    private data class ListStackEntry(
+        val indent: Int,
+        val isOrdered: Boolean,
+        val level: Int
+    )
+
     // ---------------------------------------------------------------- parsing
 
     fun parseToLexicalAst(markdown: String): List<LexicalBlockNode> {
         val lines = markdown.split('\n')
         val blocks = mutableListOf<LexicalBlockNode>()
-        val listStack = mutableListOf<Int>()
+        val listStack = mutableListOf<ListStackEntry>()
         var i = 0
 
         while (i < lines.size) {
@@ -59,7 +71,14 @@ object LexicalParser {
                         lineEnd = i - 1
                     )
                 }
-                listStack.clear()
+                // A single blank line inside a loose list must not reset the
+                // hierarchy, otherwise the next bullet loses its nesting. Only
+                // a hard break (two or more blanks) or a non-list block does.
+                val nextLine = lines.getOrNull(i)
+                val nextIsList = nextLine != null && parseListMarker(nextLine) != null
+                if (run > 1 || !nextIsList) {
+                    listStack.clear()
+                }
                 continue
             }
 
@@ -289,13 +308,58 @@ object LexicalParser {
                     }
                 }
 
-                while (listStack.isNotEmpty() && marker.contentColumn < listStack.last()) {
-                    listStack.removeAt(listStack.lastIndex)
+                // Hierarchical indent calculation. Indentation is compared on
+                // the marker column (CommonMark style), never on contentColumn:
+                // "1. Recipe:" has a content column of 3, so using it would
+                // make a following "- egg" look deeper than it is, and using
+                // the indent lets a same-column unordered bullet nest under an
+                // ordered item as a tabbed sub-list.
+                val level: Int
+                if (listStack.isEmpty()) {
+                    level = 0
+                    listStack.add(ListStackEntry(marker.indent, marker.ordered, 0))
+                } else {
+                    // Close levels that this marker has stepped out of.
+                    while (listStack.isNotEmpty() && listStack.last().indent > marker.indent) {
+                        listStack.removeAt(listStack.lastIndex)
+                    }
+                    // An ordered marker also closes any unordered sub-list it
+                    // sits beside, so "1. a / - b / 2. c" keeps 2. in the parent
+                    // list instead of inheriting the bullet's level.
+                    if (marker.ordered) {
+                        while (listStack.isNotEmpty() &&
+                            !listStack.last().isOrdered &&
+                            listStack.last().indent >= marker.indent
+                        ) {
+                            listStack.removeAt(listStack.lastIndex)
+                        }
+                    }
+                    val top = listStack.lastOrNull()
+                    when {
+                        top == null -> {
+                            listStack.add(ListStackEntry(marker.indent, marker.ordered, 0))
+                            level = 0
+                        }
+                        marker.indent > top.indent -> {
+                            val nextLevel = top.level + 1
+                            listStack.add(ListStackEntry(marker.indent, marker.ordered, nextLevel))
+                            level = nextLevel
+                        }
+                        else -> {
+                            // Same indent. Same list kind is a sibling; an
+                            // ordered -> unordered switch is a nested sub-list.
+                            if (top.isOrdered == marker.ordered) {
+                                level = top.level
+                            } else if (top.isOrdered && !marker.ordered) {
+                                val nextLevel = top.level + 1
+                                listStack.add(ListStackEntry(marker.indent, marker.ordered, nextLevel))
+                                level = nextLevel
+                            } else {
+                                level = top.level
+                            }
+                        }
+                    }
                 }
-                if (listStack.isEmpty() || marker.contentColumn > listStack.last()) {
-                    listStack.add(marker.contentColumn)
-                }
-                val level = (listStack.size - 1).coerceAtLeast(0)
 
                 blocks += LexicalListItemNode(
                     key = "block_${blocks.size}",

@@ -62,6 +62,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -672,6 +673,18 @@ private fun BlockComponent(
         val focusRequester = remember { FocusRequester() }
         val keyboard = LocalSoftwareKeyboardController.current
 
+        // Reveal block formatting under the caret. Headings, quotes and list
+        // markers keep their syntax colour and weight, and inline constructs
+        // stay styled while the user types. OffsetMapping.Identity keeps the
+        // caret and IME composition aligned with the raw source.
+        val editTransformation = remember(block, colors) {
+            when (block) {
+                is LexicalCodeBlockNode -> CodeHighlightTransformation(block.language)
+                is LexicalMathBlockNode -> VisualTransformation.None
+                else -> LiveBlockVisualTransformation(colors)
+            }
+        }
+
         LaunchedEffect(isEditing) {
             if (isEditing) {
                 delay(60)
@@ -700,9 +713,12 @@ private fun BlockComponent(
                     fontFamily = if (block is LexicalCodeBlockNode || block is LexicalMathBlockNode) FontFamily.Monospace else FontFamily.Default,
                     fontSize = 14.sp,
                     color = TextPrimary,
-                    lineHeight = 22.sp
+                    // The live transformation enlarges heading text; give it
+                    // enough leading that the larger glyphs are not clipped.
+                    lineHeight = if (block is LexicalHeadingNode) 27.sp else 22.sp
                 ),
                 cursorBrush = SolidColor(IndigoAccent),
+                visualTransformation = editTransformation,
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight()
@@ -918,13 +934,27 @@ private fun BlockComponent(
         }
 
         is LexicalListItemNode -> {
-            val startPadding = (block.indentLevel * 18).dp
+            // Nested levels step in by a full marker width so a bullet placed
+            // under an ordered item (1. Recipe: / - egg) reads as a tabbed
+            // sub-item instead of a sibling.
+            val startPadding = (block.indentLevel * 22).dp
             Row(
                 modifier = modifier
                     .fillMaxWidth()
                     .padding(start = startPadding, top = 1.dp, bottom = 1.dp),
                 verticalAlignment = Alignment.Top
             ) {
+                if (block.indentLevel > 0) {
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 7.dp)
+                            .width(2.dp)
+                            .heightIn(min = 20.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(IndigoAccent.copy(alpha = 0.22f))
+                    )
+                }
+
                 if (block.isTask) {
                     Checkbox(
                         checked = block.isChecked,
@@ -940,9 +970,9 @@ private fun BlockComponent(
                     }
                     Text(
                         text = prefix,
-                        color = IndigoGlow,
+                        color = if (block.indentLevel == 0) IndigoGlow else TextSecondary,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = if (block.indentLevel == 0) 13.sp else 12.sp,
                         modifier = Modifier.width(30.dp)
                     )
                 } else {

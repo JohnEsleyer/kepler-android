@@ -30,30 +30,30 @@ class LexicalSourceTest {
     // ------------------------------------------------------------- reading
 
     @Test
-    fun `heading text excludes the marker`() {
+    fun `heading text keeps the marker for live editing`() {
         val markdown = "## Orbital mechanics"
         assertEquals(
-            "Orbital mechanics",
+            "## Orbital mechanics",
             LexicalSource.editableText(markdown, blockOf(markdown))
         )
     }
 
     @Test
-    fun `quote text excludes every chevron`() {
+    fun `quote text keeps every chevron`() {
         val markdown = "> first\n> second"
-        assertEquals("first\nsecond", LexicalSource.editableText(markdown, blockOf(markdown)))
+        assertEquals("> first\n> second", LexicalSource.editableText(markdown, blockOf(markdown)))
     }
 
     @Test
-    fun `list item text excludes marker and continuation indent`() {
+    fun `list item text keeps marker and continuation indent`() {
         val markdown = "- item one\n  continued"
-        assertEquals("item one\ncontinued", LexicalSource.editableText(markdown, blockOf(markdown)))
+        assertEquals("- item one\n  continued", LexicalSource.editableText(markdown, blockOf(markdown)))
     }
 
     @Test
-    fun `task item text excludes the checkbox`() {
+    fun `task item text keeps the checkbox`() {
         val markdown = "- [x] done"
-        assertEquals("done", LexicalSource.editableText(markdown, blockOf(markdown)))
+        assertEquals("- [x] done", LexicalSource.editableText(markdown, blockOf(markdown)))
     }
 
     @Test
@@ -63,9 +63,25 @@ class LexicalSourceTest {
     }
 
     @Test
-    fun `math block text is the latex without delimiters`() {
+    fun `math block text keeps its delimiters for live editing`() {
         val markdown = "$$\nE = mc^2\n$$"
-        assertEquals("E = mc^2", LexicalSource.editableText(markdown, blockOf(markdown)))
+        assertEquals("$$\nE = mc^2\n$$", LexicalSource.editableText(markdown, blockOf(markdown)))
+    }
+
+    @Test
+    fun `editing a heading that already has a marker does not duplicate it`() {
+        val markdown = "## Old"
+        val updated = LexicalSource.withEditableText(markdown, blockOf(markdown), "## New")
+
+        assertEquals("## New", updated)
+    }
+
+    @Test
+    fun `editing a list item that already has a marker does not duplicate it`() {
+        val markdown = "- one"
+        val updated = LexicalSource.withEditableText(markdown, blockOf(markdown), "- two")
+
+        assertEquals("- two", updated)
     }
 
     // ------------------------------------------------------------- writing
@@ -154,7 +170,7 @@ class LexicalSourceTest {
             .filterIsInstance<LexicalCodeBlockNode>()
             .single()
 
-        assertEquals("intro\n\n\noutro", LexicalSource.removeBlock(markdown, code))
+        assertEquals("intro\n\noutro", LexicalSource.removeBlock(markdown, code))
     }
 
     @Test

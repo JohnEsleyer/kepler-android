@@ -144,6 +144,163 @@ class InlineMarkdownTransformation(
     }
 }
 
+/**
+ * Styles a whole block while it is being edited, so the Markdown the live
+ * editor reveals looks like the rendered block:
+ *
+ *  * `#`, `>`, `-`/`1.` prefixes are tinted and weighted like their rendered
+ *    counterparts;
+ *  * heading text grows with its level;
+ *  * inline construct styling is applied on top.
+ *
+ * The mapping is [OffsetMapping.Identity]: nothing is inserted or deleted, so
+ * the caret, IME composing region and selection stay in sync with the source.
+ */
+class LiveBlockVisualTransformation(
+    private val colors: LexicalInlineColors
+) : VisualTransformation {
+
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text
+        val builder = AnnotatedString.Builder(raw)
+
+        // ------------------------------------------------------ block prefixes
+        headingRegex.find(raw)?.let { match ->
+            val hashes = match.groups[1]!!
+            val level = hashes.value.length
+            builder.addStyle(
+                SpanStyle(color = IndigoGlow.copy(alpha = 0.9f), fontWeight = FontWeight.Bold),
+                hashes.range.first,
+                hashes.range.last + 1
+            )
+
+            val lineEnd = raw.indexOf('\n').let { if (it == -1) raw.length else it }
+            val (size, weight, color) = when (level) {
+                1 -> Triple(22.sp, FontWeight.ExtraBold, Color.White)
+                2 -> Triple(18.sp, FontWeight.Bold, Color(0xFFF1F5F9))
+                3 -> Triple(16.sp, FontWeight.SemiBold, Color(0xFFE2E8F0))
+                4 -> Triple(15.sp, FontWeight.SemiBold, Color(0xFFCBD5E1))
+                5 -> Triple(14.sp, FontWeight.Medium, Color(0xFFB6C2D2))
+                else -> Triple(13.sp, FontWeight.Medium, colors.muted)
+            }
+            // Start after the first line's marker so the hashes keep their
+            // syntax colour while the title itself inherits heading weight.
+            val contentStart = (hashes.range.last + 1).coerceAtMost(raw.length)
+            if (contentStart < lineEnd) {
+                builder.addStyle(
+                    SpanStyle(fontSize = size, fontWeight = weight, color = color),
+                    contentStart,
+                    lineEnd
+                )
+            }
+        }
+
+        // A quote block can span several source lines, each with its own `>`.
+        var quoteLineStart = 0
+        while (quoteLineStart <= raw.length) {
+            val quoteLineEnd = raw.indexOf('\n', quoteLineStart)
+                .let { if (it == -1) raw.length else it }
+            val segment = raw.substring(quoteLineStart, quoteLineEnd)
+            val match = quoteRegex.find(segment)
+            if (match != null) {
+                builder.addStyle(
+                    SpanStyle(color = IndigoAccent, fontWeight = FontWeight.Bold),
+                    quoteLineStart + match.range.first,
+                    quoteLineStart + match.range.last + 1
+                )
+                if (quoteLineStart + match.range.last + 1 < quoteLineEnd) {
+                    builder.addStyle(
+                        SpanStyle(fontStyle = FontStyle.Italic, color = colors.muted),
+                        quoteLineStart + match.range.last + 1,
+                        quoteLineEnd
+                    )
+                }
+            }
+            if (quoteLineEnd >= raw.length) break
+            quoteLineStart = quoteLineEnd + 1
+        }
+
+        listMarkerRegex.find(raw)?.let { match ->
+            val marker = match.groups[2]!!
+            builder.addStyle(
+                SpanStyle(color = IndigoGlow, fontWeight = FontWeight.Bold),
+                marker.range.first,
+                marker.range.last + 1
+            )
+        }
+
+        taskMarkerRegex.find(raw)?.let { match ->
+            builder.addStyle(
+                SpanStyle(color = com.esper.android.ui.theme.EmeraldSync, fontWeight = FontWeight.Bold),
+                match.range.first,
+                match.range.last + 1
+            )
+        }
+
+        // ----------------------------------------------------- inline styling
+        LexicalInline.scan(raw).spans.forEach { span ->
+            val start = span.rawStart.coerceIn(0, raw.length)
+            val end = span.rawEnd.coerceIn(start, raw.length)
+            if (start >= end) return@forEach
+            builder.addStyle(inlineStyle(span), start, end)
+        }
+
+        return TransformedText(builder.toAnnotatedString(), OffsetMapping.Identity)
+    }
+
+    private fun inlineStyle(span: LexicalInlineSpan): SpanStyle = when (span.kind) {
+        LexicalInlineKind.MARKER -> SpanStyle(
+            color = colors.muted.copy(alpha = 0.65f),
+            fontWeight = FontWeight.Normal
+        )
+        LexicalInlineKind.CODE -> SpanStyle(
+            color = colors.code,
+            background = colors.codeBackground,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp
+        )
+        LexicalInlineKind.MATH -> SpanStyle(
+            color = colors.math,
+            background = colors.mathBackground,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 13.sp
+        )
+        LexicalInlineKind.LINK -> SpanStyle(
+            color = colors.link,
+            textDecoration = TextDecoration.Underline
+        )
+        LexicalInlineKind.TIMESTAMP -> SpanStyle(
+            color = colors.timestamp,
+            background = colors.timestampBackground,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+        else -> SpanStyle(
+            color = when {
+                span.url != null -> colors.link
+                span.bold -> Color.White
+                else -> Color.Unspecified
+            },
+            fontWeight = if (span.bold) FontWeight.Bold else null,
+            fontStyle = if (span.italic) FontStyle.Italic else null,
+            textDecoration = when {
+                span.url != null -> TextDecoration.Underline
+                span.strike -> TextDecoration.LineThrough
+                else -> null
+            },
+            background = if (span.highlight) colors.highlightBackground else Color.Unspecified,
+            fontFamily = if (span.code) FontFamily.Monospace else null
+        )
+    }
+
+    private companion object {
+        val headingRegex = Regex("""^(#{1,6})([ \t]+)""")
+        val quoteRegex = Regex("""^(>[ \t]*)""")
+        val listMarkerRegex = Regex("""^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)""")
+        val taskMarkerRegex = Regex("""\[([ xX])\]""")
+    }
+}
+
 /** Syntax highlighting applied behind an editable code block. */
 class CodeHighlightTransformation(private val language: String) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText =

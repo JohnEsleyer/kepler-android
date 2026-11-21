@@ -126,7 +126,10 @@ object LexicalSource {
         val pasted = normalizePastedMarkdown(pastedMarkdown)
         if (pasted.isEmpty()) return currentMarkdown
 
-        val blockText = currentBlockText ?: editableText(currentMarkdown, block)
+        // Caret offsets from a live field include the visible markers, but a
+        // paste that owns whole lines must not inherit the old bullet/heading.
+        // With no explicit selection, splice against the bare content.
+        val blockText = currentBlockText ?: contentText(currentMarkdown, block)
 
         // Pasting into an empty note should produce exactly the pasted note,
         // not a leading blank line above it.
@@ -516,10 +519,30 @@ object LexicalSource {
     }
 
     /**
-     * The editable text of [block]: the content without the structural marker
-     * (`#`, `>`, `- `, the code fences, …).
+     * The editable text of [block], including its structural marker.
+     *
+     * The live editor reveals the Markdown the user authored (`# Hello`,
+     * `> quote`, `- bullet`) rather than a stripped-down copy, so formatting
+     * stays visible under the caret. [withEditableText] understands both the
+     * full form returned here and a bare content string.
      */
     fun editableText(markdown: String, block: LexicalBlockNode): String {
+        val lines = markdown.split('\n')
+        return when (block) {
+            is LexicalSubpageBlockNode -> "[${block.title}](kepler-page://${block.pageId})"
+            is LexicalCodeBlockNode -> block.code
+            else -> slice(lines, block)?.joinToString("\n") ?: when (block) {
+                is LexicalMathBlockNode -> block.latex
+                else -> ""
+            }
+        }
+    }
+
+    /**
+     * The text without its block marker. Used by block transforms, which need
+     * the content of the old block before writing the new type.
+     */
+    private fun contentText(markdown: String, block: LexicalBlockNode): String {
         val lines = markdown.split('\n')
         return when (block) {
             is LexicalSubpageBlockNode -> "[${block.title}](kepler-page://${block.pageId})"
@@ -546,11 +569,11 @@ object LexicalSource {
     fun withEditableText(markdown: String, block: LexicalBlockNode, text: String): String {
         if (markdown.isBlank()) {
             return when (block) {
-                is LexicalHeadingNode -> "${"#".repeat(block.level)} $text"
-                is LexicalQuoteNode -> text.split('\n').joinToString("\n") { "> $it" }
+                is LexicalHeadingNode -> applyHeadingMarker(block.level, text).joinToString("\n")
+                is LexicalQuoteNode -> applyQuoteMarker(text).joinToString("\n")
                 is LexicalCodeBlockNode -> "```${block.language}\n$text\n```"
                 is LexicalMathBlockNode -> "$$\n$text\n$$"
-                is LexicalListItemNode -> "- $text"
+                is LexicalListItemNode -> applyListMarker(block, text).joinToString("\n")
                 else -> text
             }
         }
@@ -573,34 +596,27 @@ object LexicalSource {
 
         val replacement: List<String> = when (block) {
             is LexicalSubpageBlockNode -> text.split('\n')
-            is LexicalHeadingNode -> text.split('\n').mapIndexed { index, line ->
-                if (index == 0) "${"#".repeat(block.level)} $line" else line
-            }
-            is LexicalQuoteNode -> text.split('\n').map { "> $it" }
-            is LexicalListItemNode -> {
-                val taskPrefix = when {
-                    !block.isTask -> ""
-                    block.isChecked -> "[x] "
-                    else -> "[ ] "
-                }
-                val continuation = " ".repeat(block.contentColumn.coerceAtLeast(1))
-                text.split('\n').mapIndexed { index, line ->
-                    if (index == 0) block.indentPrefix + block.marker + taskPrefix + line
-                    else continuation + line
-                }
-            }
+            is LexicalHeadingNode -> applyHeadingMarker(block.level, text)
+            is LexicalQuoteNode -> applyQuoteMarker(text)
+            is LexicalListItemNode -> applyListMarker(block, text)
             is LexicalCodeBlockNode -> {
                 val opening = lines[start]
                 val closing = lines[end]
                 val closed = closing.trim().let { it.startsWith("```") || it.startsWith("~~~") }
-                buildList {
-                    add(opening)
-                    addAll(text.split('\n'))
-                    if (closed) add(closing)
+                if (text.trimStart().startsWith("```") || text.trimStart().startsWith("~~~")) {
+                    text.split('\n')
+                } else {
+                    buildList {
+                        add(opening)
+                        addAll(text.split('\n'))
+                        if (closed) add(closing)
+                    }
                 }
             }
             is LexicalMathBlockNode -> {
-                if (start == end) {
+                if (text.trim().startsWith("$$") || text.trim().startsWith("\\[")) {
+                    text.split('\n')
+                } else if (start == end) {
                     val original = lines[start].trim()
                     val bracket = original.startsWith("\\[")
                     val open = if (bracket) "\\[" else "$$"
@@ -672,7 +688,7 @@ object LexicalSource {
         val after = text.substring(safeOffset).removePrefix("\n")
 
         // Enter on an empty list item leaves the list (Notion behaviour).
-        if (block is LexicalListItemNode && before.isBlank()) {
+        if (block is LexicalListItemNode && isMarkerOnly(block, before)) {
             val lines = markdown.split('\n').toMutableList()
             val start = block.lineStart.coerceIn(0, (lines.size - 1).coerceAtLeast(0))
             val end = block.lineEnd.coerceIn(start, (lines.size - 1).coerceAtLeast(0))
@@ -780,10 +796,10 @@ object LexicalSource {
      * Transforms [block] into a new block type (H1, H2, H3, Paragraph, Quote, Bullet, Task, Code).
      */
     fun transformBlock(markdown: String, block: LexicalBlockNode, targetType: String): String {
-        val content = editableText(markdown, block)
+        val content = contentText(markdown, block)
             .replace(Regex("""^#{1,6}\s+"""), "")
             .replace(Regex("""^>\s+"""), "")
-            .replace(Regex("""^[-*+]\s+(\[[ xX]\]\s+)? """), "")
+            .replace(Regex("""^([-*+]|\d{1,9}[.)])\s+(\[[ xX]\]\s+)? ?"""), "")
             .trim()
         val newText = when (targetType.lowercase()) {
             "h1" -> "# $content"
@@ -800,6 +816,58 @@ object LexicalSource {
     }
 
     // -------------------------------------------------------------- internals
+
+    private val headingTextPrefix = Regex("""^#{1,6}[ \t]+""")
+    private val listMarkerTextPrefix = Regex("""^[ \t]*([-*+]|\d{1,9}[.)])([ \t]+|$)""")
+
+    /**
+     * Re-applies a heading marker only when [text] does not already carry
+     * one. This is what stops a revealed `# Hello` from being saved as
+     * `# # Hello` when editing finishes.
+     */
+    private fun applyHeadingMarker(level: Int, text: String): List<String> {
+        val lines = text.split('\n')
+        val first = lines.firstOrNull().orEmpty()
+        if (headingTextPrefix.containsMatchIn(first)) return lines
+        return lines.mapIndexed { index, line ->
+            if (index == 0) "${"#".repeat(level)} $line" else line
+        }
+    }
+
+    private fun applyQuoteMarker(text: String): List<String> {
+        val lines = text.split('\n')
+        if (lines.firstOrNull()?.trimStart()?.startsWith(">") == true) return lines
+        return lines.map { "> $it" }
+    }
+
+    private fun applyListMarker(block: LexicalListItemNode, text: String): List<String> {
+        val lines = text.split('\n')
+        val first = lines.firstOrNull().orEmpty()
+        // The user may have changed "- " to "1. " (or deleted the marker and
+        // the parser would otherwise not see a list item). Keep a marker they
+        // typed; add the block's marker back when there is none.
+        if (listMarkerTextPrefix.containsMatchIn(first)) return lines
+        val taskPrefix = when {
+            !block.isTask -> ""
+            block.isChecked -> "[x] "
+            else -> "[ ] "
+        }
+        val continuation = " ".repeat(block.contentColumn.coerceAtLeast(1))
+        return lines.mapIndexed { index, line ->
+            if (index == 0) block.indentPrefix + block.marker + taskPrefix + line
+            else continuation + line
+        }
+    }
+
+    private fun isMarkerOnly(block: LexicalListItemNode, text: String): Boolean {
+        var first = text.lineSequence().firstOrNull().orEmpty()
+        if (first.startsWith(block.indentPrefix)) first = first.substring(block.indentPrefix.length)
+        if (first.startsWith(block.marker)) first = first.substring(block.marker.length)
+        if (block.isTask) {
+            first = first.removePrefix("[ ] ").removePrefix("[x] ").removePrefix("[X] ")
+        }
+        return first.isBlank()
+    }
 
     private fun slice(lines: List<String>, block: LexicalBlockNode): List<String>? {
         if (lines.isEmpty()) return null

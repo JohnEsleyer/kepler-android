@@ -141,6 +141,51 @@ class LexicalParserTest {
     }
 
     @Test
+    fun `unordered bullets under an ordered item form a tabbed sub-list`() {
+        val items = blocks("1. Recipe:\n- 2x egg\n- 1 cup flour")
+            .filterIsInstance<LexicalListItemNode>()
+
+        assertEquals(3, items.size)
+        assertEquals(0, items[0].indentLevel)
+        assertTrue(items[0].isOrdered)
+        assertEquals(listOf(1, 1), items.drop(1).map { it.indentLevel })
+        assertTrue(items.drop(1).all { !it.isOrdered })
+    }
+
+    @Test
+    fun `a sibling ordered item returns to the parent level after a sub-list`() {
+        val items = blocks("1. Recipe:\n- egg\n2. Method:")
+            .filterIsInstance<LexicalListItemNode>()
+
+        assertEquals(listOf(0, 1, 0), items.map { it.indentLevel })
+        assertEquals(listOf(true, false, true), items.map { it.isOrdered })
+    }
+
+    @Test
+    fun `ordered items resume the parent list after a mixed sub-list`() {
+        val items = blocks("1. Recipe:\n- egg\n  - whisked\n2. Method:")
+            .filterIsInstance<LexicalListItemNode>()
+
+        assertEquals(listOf(0, 1, 2, 0), items.map { it.indentLevel })
+        assertEquals(listOf(true, false, false, true), items.map { it.isOrdered })
+    }
+
+    @Test
+    fun `nested bullets inside an ordered sub-list keep stepping in`() {
+        val items = blocks("1. Recipe:\n- egg\n  - whisked\n- flour")
+            .filterIsInstance<LexicalListItemNode>()
+
+        assertEquals(listOf(0, 1, 2, 1), items.map { it.indentLevel })
+    }
+
+    @Test
+    fun `a single blank line keeps loose list nesting`() {
+        val items = blocks("- a\n\n  - b").filterIsInstance<LexicalListItemNode>()
+
+        assertEquals(listOf(0, 1), items.map { it.indentLevel })
+    }
+
+    @Test
     fun `ordered list keeps its numbers`() {
         val items = blocks("3. three\n4. four").filterIsInstance<LexicalListItemNode>()
 
